@@ -41,7 +41,49 @@ function label(gX, gY) {
   return `${base} (на ${removed} поколени${removed === 1 ? "е" : "я"} ${direction}, по типу ${kind})`;
 }
 
-// persons: array, relationships: array, marinaId, husbandId (optional — marked separately, not blood)
+// generationOffsetRelativeTo — то же самое дерево связей, но радиус
+// считается от произвольного выбранного человека (для страницы «Схема»),
+// а не всегда от Марины.
+export function generationOffsetRelativeTo(rootId, persons, relationships) {
+  const parentsOf = new Map();
+  const sibGraph = new Map();
+  const add = (map, k, v) => { if (!map.has(k)) map.set(k, new Set()); map.get(k).add(v); };
+  relationships.forEach((r) => {
+    if (r.type === "parent") add(parentsOf, r.b, r.a);
+    if (r.type === "sibling") { add(sibGraph, r.a, r.b); add(sibGraph, r.b, r.a); }
+  });
+  const parentsAug = new Map();
+  parentsOf.forEach((v, k) => parentsAug.set(k, new Set(v)));
+  const visited = new Set();
+  let synthCounter = 0;
+  const component = (start) => {
+    const comp = new Set([start]); const q = [start];
+    while (q.length) { const cur = q.shift(); for (const nb of sibGraph.get(cur) || []) if (!comp.has(nb)) { comp.add(nb); q.push(nb); } }
+    return comp;
+  };
+  for (const node of sibGraph.keys()) {
+    if (visited.has(node)) continue;
+    const comp = component(node);
+    comp.forEach((m) => visited.add(m));
+    let unionParents = new Set();
+    comp.forEach((m) => (parentsOf.get(m) || []).forEach((p) => unionParents.add(p)));
+    if (unionParents.size) comp.forEach((m) => { if (!parentsOf.get(m) || !parentsOf.get(m).size) { if (!parentsAug.has(m)) parentsAug.set(m, new Set()); unionParents.forEach((p) => parentsAug.get(m).add(p)); } });
+    const anyKnown = [...comp].some((m) => parentsOf.get(m) && parentsOf.get(m).size);
+    if (!anyKnown) { synthCounter++; const sid = `__syn_${synthCounter}`; comp.forEach((m) => { if (!parentsAug.has(m)) parentsAug.set(m, new Set()); parentsAug.get(m).add(sid); }); }
+  }
+  const ancRoot = ancestorsWithDist(rootId, parentsAug);
+  const out = new Map();
+  persons.forEach((p) => {
+    if (p.id === rootId) { out.set(p.id, { offset: 0, ring: 0 }); return; }
+    const ancX = ancestorsWithDist(p.id, parentsAug);
+    let best = null, bestSum = Infinity;
+    ancRoot.forEach((gX, a) => { if (ancX.has(a)) { const sum = gX + ancX.get(a); if (sum < bestSum) { bestSum = sum; best = a; } } });
+    if (best === null) return;
+    const gX = ancRoot.get(best), gY = ancX.get(best);
+    out.set(p.id, { offset: gX - gY, ring: gX + gY });
+  });
+  return out;
+}
 export function computeAllRelations(persons, relationships, marinaId, husbandId) {
   const parentsOf = new Map();
   const sibGraph = new Map();
