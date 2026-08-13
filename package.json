@@ -1,0 +1,9 @@
+{
+  "name": "skryabin-family",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Семейный архив рода Скрябиных",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
