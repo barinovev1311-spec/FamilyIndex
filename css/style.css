@@ -137,6 +137,7 @@ section.block.tinted { background: linear-gradient(180deg, rgba(139, 108, 247, 0
 .side-other .side-tag { color: var(--gold); }
 .origin-card p { font-size: 0.92rem; margin: 12px 0 0; color: var(--ink-soft); }
 .origin-card .uncertain-tag { display: inline-block; margin-top: 10px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-faint); border: 1px dashed var(--line-bright); padding: 2px 9px; border-radius: 10px; }
+.origin-card .uncertain-tag.auto-tag { color: var(--gold); border-color: var(--gold); }
 
 .place-list { display: flex; flex-direction: column; gap: 12px; }
 .place-row { display: grid; grid-template-columns: 200px auto 1fr; gap: 16px; align-items: baseline; padding: 16px 0; border-bottom: 1px solid var(--line); }
@@ -243,6 +244,8 @@ textarea.input { resize: vertical; }
 .admin-table th { text-align: left; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; color: var(--ink-faint); padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .admin-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .admin-table tr:hover td { background: var(--bg-elevated); }
+.admin-table tr.row-incomplete td:first-child { border-left: 2px solid var(--gold); }
+.missing-badge { display: inline-block; min-width: 18px; text-align: center; background: var(--gold-soft); color: var(--gold); font-family: var(--font-mono); font-size: 0.72rem; padding: 1px 6px; border-radius: 10px; font-weight: 700; }
 
 .empty-state { border: 1px dashed var(--line-bright); border-radius: var(--radius); padding: 44px 26px; text-align: center; background: var(--bg-soft); }
 

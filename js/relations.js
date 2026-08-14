@@ -124,6 +124,23 @@ export function generationOffsetRelativeTo(rootId, persons, relationships) {
 export function computeAllRelations(persons, relationships, marinaId, husbandId) {
   const parentsAug = buildAugmentedParents(relationships);
   const { dist: ancMarina } = ancestorsWithPath(marinaId, parentsAug);
+
+  // определяем, кто из прямых родителей Марины — отец, а кто — мать
+  // (по полу), и строим два отдельных набора предков для каждой линии,
+  // чтобы каждого кровного родственника можно было покрасить верно.
+  const marinaParentIds = [...(parentsAug.get(marinaId) || [])];
+  const personById = new Map(persons.map((p) => [p.id, p]));
+  const fatherId = marinaParentIds.find((id) => personById.get(id)?.gender === "male");
+  const motherId = marinaParentIds.find((id) => personById.get(id)?.gender === "female");
+  const ancFatherLine = fatherId ? ancestorsWithPath(fatherId, parentsAug).dist : new Map();
+  const ancMotherLine = motherId ? ancestorsWithPath(motherId, parentsAug).dist : new Map();
+
+  const sideOfAncestor = (ancestorId) => {
+    if (ancestorId === fatherId || ancFatherLine.has(ancestorId)) return "father";
+    if (ancestorId === motherId || ancMotherLine.has(ancestorId)) return "mother";
+    return null;
+  };
+
   const result = new Map();
 
   persons.forEach((p) => {
@@ -134,7 +151,8 @@ export function computeAllRelations(persons, relationships, marinaId, husbandId)
     ancMarina.forEach((gX, a) => { if (ancX.has(a)) { const sum = gX + ancX.get(a); if (sum < bestSum) { bestSum = sum; best = a; } } });
     if (best === null) { result.set(p.id, { generation: null, side: null, relationToMarina: "родство не установлено" }); return; }
     const gX = ancMarina.get(best), gY = ancX.get(best);
-    result.set(p.id, { generation: gX - gY, side: null, relationToMarina: label(gX, gY) });
+    const side = gX > 0 ? sideOfAncestor(best) : null;
+    result.set(p.id, { generation: gX - gY, side, relationToMarina: label(gX, gY) });
   });
 
   if (husbandId) {

@@ -1,3 +1,4 @@
+import { guessSurnameOrigin, sideLabelForOrigin, stripGenderSuffix } from "./surname-rules.js";
 import { DB } from "./db.js";
 import { generationOffsetRelativeTo, relationPathToMarina } from "./relations.js";
 
@@ -276,17 +277,51 @@ function originCard(o) {
       <div class="surname">${esc(o.surname)}</div>
       <p>${esc(o.origin)}</p>
       ${o.note ? `<p class="muted" style="font-size:0.85rem">${esc(o.note)}</p>` : ""}
-      ${o.uncertain ? `<span class="uncertain-tag">версия не окончательная</span>` : ""}
+      ${o.auto ? `<span class="uncertain-tag auto-tag">⚙ автоматически по общим правилам, не проверено</span>` : o.uncertain ? `<span class="uncertain-tag">версия не окончательная</span>` : ""}
     </div>
   `;
 }
 
+// собираем фамилии, которых нет в кураторском списке (window.SURNAME_ORIGINS),
+// и достраиваем для них черновик по типовым правилам ономастики — честно
+// помеченный как автоматический, не факт (см. js/surname-rules.js)
+function collectSurnameCards() {
+  const curated = window.SURNAME_ORIGINS;
+  const curatedKeys = new Set(curated.map((o) => stripGenderSuffix(o.surname).toLowerCase()));
+  const db = DB.get();
+  const groups = new Map(); // normalizedKey -> { lastName, sides:Set }
+  db.persons.forEach((p) => {
+    if (!p.lastName) return;
+    const key = stripGenderSuffix(p.lastName).toLowerCase();
+    if (curatedKeys.has(key)) return;
+    if (!groups.has(key)) groups.set(key, { lastName: p.lastName, sides: new Set() });
+    if (p._meta?.side) groups.get(key).sides.add(p._meta.side);
+  });
+  const autoCards = [];
+  groups.forEach(({ lastName, sides }) => {
+    const guess = guessSurnameOrigin(lastName);
+    if (!guess) return;
+    const side = sides.has("father") ? "father" : sides.has("mother") ? "mother" : sides.has("husband") ? "husband" : null;
+    autoCards.push({ surname: lastName, side: sideLabelForOrigin(side), origin: guess.origin, auto: true });
+  });
+  autoCards.sort((a, b) => a.surname.localeCompare(b.surname, "ru"));
+  return autoCards;
+}
+
 function viewOrigins() {
+  const autoCards = collectSurnameCards();
   return `
     <div class="page-narrow">
       <div class="page-head"><div><span class="eyebrow">Ономастика рода</span><h1>Откуда взялись фамилии</h1>
       <p class="lede">Общепринятые версии происхождения фамилий, встречающихся в дереве — не архивные факты именно о вашей семье, а сведения об именослове вообще. Где версия не окончательная, это указано.</p></div></div>
       <div class="origin-grid">${window.SURNAME_ORIGINS.map(originCard).join("")}</div>
+      ${autoCards.length ? `
+      <div class="block-head" style="margin-top:40px">
+        <span class="eyebrow">Новые фамилии в дереве</span>
+        <h2>Пока без проверенной статьи</h2>
+        <p class="lede">Эти фамилии появились в архиве, но для них ещё нет отдельно изученной версии — ниже черновик по общим правилам русской ономастики, не факт. Уточните вручную, если знаете точнее.</p>
+      </div>
+      <div class="origin-grid">${autoCards.map(originCard).join("")}</div>` : ""}
     </div>
   `;
 }
@@ -443,7 +478,7 @@ function viewPerson(id) {
         ${(p.nameVariants || []).length ? infoItem("Варианты имени", p.nameVariants.join(", ")) : ""}
       </div>
 
-      ${p.bio ? `<div class="panel"><h4 class="eyebrow">Биография</h4><p>${esc(p.bio)}</p></div>` : ""}
+      ${p.bio ? `<div class="panel"><h4 class="eyebrow">Чем известен(на) / жизненный путь</h4><p>${esc(p.bio)}</p></div>` : ""}
       ${p.notes ? `<div class="panel"><h4 class="eyebrow">Заметки</h4><p>${esc(p.notes)}</p></div>` : ""}
 
       <div id="quick-add-slot"></div>
@@ -825,7 +860,9 @@ function personFormFields(p = {}) {
       <label>Место смерти <input class="input" name="deathPlace" value="${esc(p.deathPlace)}"></label>
       <label>Род занятий <input class="input" name="occupation" value="${esc(p.occupation)}"></label>
     </div>
-    <label class="block">Биография <textarea class="input" name="bio" rows="3">${esc(p.bio)}</textarea></label>
+    <label class="block">Чем жил, кем работал, чем известен(на) — жизненный путь, если что-то известно
+      <textarea class="input" name="bio" rows="4" placeholder="Например: работала учительницей русского языка; была известна как хорошая портниха на всю деревню; воевала в 1943–1945…">${esc(p.bio)}</textarea>
+    </label>
     <label class="block">Заметки <textarea class="input" name="notes" rows="2">${esc(p.notes)}</textarea></label>
     <label class="block">Фотографии (можно несколько)
       <input type="file" accept="image/*" multiple data-action="photos-input">
@@ -937,15 +974,47 @@ function viewAdmin() {
   `;
 }
 
+function personCompleteness(p) {
+  const core = [];
+  if (!p.birth || p.birth.mode === "unknown") core.push("дата рождения");
+  if (!p.birthPlace) core.push("место рождения");
+  if (!p.occupation && !p.bio) core.push("чем известен / род занятий");
+  if (p._meta?.relationToMarina === "родство не установлено") core.push("родство не определено");
+  const nice = [];
+  if (!personPhotos(p).length) nice.push("фото");
+  return { core, nice, missing: [...core, ...nice] };
+}
+
 function adminPeopleTab(db) {
-  const list = [...db.persons].sort((a, b) => fullName(a).localeCompare(fullName(b), "ru"));
+  const onlyIncomplete = window.__adminIncompleteOnly;
+  let list = db.persons.map((p) => ({ p, ...personCompleteness(p) }));
+  const incompleteCount = list.filter((x) => x.core.length > 0).length;
+  if (onlyIncomplete) list = list.filter((x) => x.core.length > 0);
+  list.sort((a, b) => b.core.length - a.core.length || fullName(a.p).localeCompare(fullName(b.p), "ru"));
+
   return `
-    <div class="panel"><table class="admin-table">
-      <thead><tr><th>Имя</th><th>Родство</th><th>Годы</th><th></th></tr></thead>
-      <tbody>${list.map((p) => `
-        <tr><td><a href="#/person/${p.id}">${esc(fullName(p))}</a></td><td class="muted">${esc(p._meta.relationToMarina)}</td><td class="muted">${esc(shortDates(p))}</td>
-        <td><button class="btn btn-small btn-danger" data-action="admin-delete-person" data-id="${p.id}">Удалить</button></td></tr>`).join("")}</tbody>
-    </table></div>
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <p class="muted" style="margin:0">Не хватает ключевых сведений: <strong style="color:var(--gold)">${incompleteCount}</strong> из ${db.persons.length} (фото не считаем «пробелом» — это отдельно, отмечено серым)</p>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:var(--ink-soft);cursor:pointer">
+          <input type="checkbox" data-action="toggle-incomplete-filter" ${onlyIncomplete ? "checked" : ""}> показывать только неполные
+        </label>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>Имя</th><th>Родство</th><th>Годы</th><th>Чего не хватает</th><th></th></tr></thead>
+        <tbody>${list.map(({ p, core, nice }) => `
+          <tr class="${core.length ? "row-incomplete" : ""}">
+            <td><a href="#/person/${p.id}">${esc(fullName(p))}</a></td>
+            <td class="muted">${esc(p._meta.relationToMarina)}</td>
+            <td class="muted">${esc(shortDates(p))}</td>
+            <td>
+              ${core.length ? `<span class="missing-badge">${core.length}</span> <span class="muted" style="font-size:0.78rem">${esc(core.join(", "))}</span>` : `<span class="badge living" style="opacity:0.8">полная</span>`}
+              ${nice.length ? `<span class="muted" style="font-size:0.75rem;display:block;margin-top:2px">+ нет фото</span>` : ""}
+            </td>
+            <td><button class="btn btn-small btn-danger" data-action="admin-delete-person" data-id="${p.id}">Удалить</button></td>
+          </tr>`).join("")}</tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -1040,6 +1109,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.matches("[data-action='scheme-root-select']")) { window.__schemeRoot = el.value; render(); }
+  if (el.matches("[data-action='toggle-incomplete-filter']")) { window.__adminIncompleteOnly = el.checked; render(); }
   if (el.name && el.name.endsWith("_mode")) {
     const fs = el.closest("[data-datefield]");
     fs.querySelectorAll(".date-inputs").forEach((s) => { s.style.display = s.dataset.mode === el.value ? "inline-flex" : "none"; });
