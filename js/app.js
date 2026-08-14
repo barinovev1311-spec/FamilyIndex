@@ -1237,6 +1237,37 @@ document.addEventListener("input", (e) => {
   }
 });
 
+// Enter в текстовом поле многополевой формы раньше отправлял её сразу —
+// человек ещё печатает следующее поле, а форма уже ушла и "слетает" на
+// новую страницу с неполными данными. Разрешаем отправку по Enter только
+// из последнего поля формы (или явным кликом на кнопку) — в остальных
+// полях Enter просто переводит фокус на следующее поле, как Tab.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const el = e.target;
+  if (el.tagName !== "INPUT") return;
+  const form = el.closest("[data-form]");
+  if (!form) return;
+  const fields = [...form.querySelectorAll("input:not([type=hidden]):not([type=file]), select")];
+  const idx = fields.indexOf(el);
+  const isLast = idx === -1 || idx === fields.length - 1;
+  if (isLast) return; // из последнего поля Enter отправляет форму как обычно
+  e.preventDefault();
+  const next = fields[idx + 1];
+  if (next) next.focus();
+});
+
+function withSubmitLoading(form, loadingLabel, fn) {
+  const btn = form.querySelector("button[type=submit]");
+  const original = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = loadingLabel; }
+  const restore = () => { if (btn) { btn.disabled = false; btn.textContent = original; } };
+  const result = fn();
+  if (result && typeof result.finally === "function") result.finally(restore);
+  else restore();
+  return result;
+}
+
 document.addEventListener("submit", (e) => {
   const form = e.target;
   if (!form.matches("[data-form]")) return;
@@ -1244,25 +1275,24 @@ document.addEventListener("submit", (e) => {
   const kind = form.dataset.form;
 
   if (kind === "admin-login") {
-    const pass = form.password.value;
-    DB.checkPassword(pass).then((ok) => {
+    withSubmitLoading(form, "Входим…", () => DB.checkPassword(form.password.value).then((ok) => {
       if (ok) render();
       else toast("Неверный пароль.", true);
-    }).catch(() => toast("Не удалось связаться с сервером.", true));
+    }).catch(() => toast("Не удалось связаться с сервером.", true)));
   }
 
   if (kind === "new-person") {
-    guarded(async () => { const created = await DB.addPerson(readPersonForm(form)); location.hash = "#/person/" + created.id; });
+    withSubmitLoading(form, "Сохраняем…", () => guarded(async () => { const created = await DB.addPerson(readPersonForm(form)); location.hash = "#/person/" + created.id; }));
   }
 
   if (kind === "edit-person") {
-    guarded(async () => { await DB.updatePerson(form.dataset.id, readPersonForm(form)); document.getElementById("edit-person-slot").innerHTML = ""; toast("Сохранено."); });
+    withSubmitLoading(form, "Сохраняем…", () => guarded(async () => { await DB.updatePerson(form.dataset.id, readPersonForm(form)); document.getElementById("edit-person-slot").innerHTML = ""; toast("Сохранено."); }));
   }
 
   if (kind === "quick-add") {
     const personId = form.dataset.person, key = form.dataset.key;
     const def = QUICK_ADD_DEFS.find((q) => q.key === key);
-    guarded(async () => {
+    withSubmitLoading(form, "Добавляем…", () => guarded(async () => {
       let otherId;
       if (form.mode.value === "existing") {
         otherId = form.existingId.value;
@@ -1279,7 +1309,7 @@ document.addEventListener("submit", (e) => {
       else if (def.type === "sibling") await DB.addRelationship(personId, otherId, "sibling");
       document.getElementById("quick-add-slot").innerHTML = "";
       toast("Добавлено.");
-    });
+    }));
   }
 });
 
