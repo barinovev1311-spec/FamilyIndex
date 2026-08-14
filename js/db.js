@@ -7,6 +7,7 @@ import { computeAllRelations } from "./relations.js";
 let seed = null;
 let overlay = null;
 let ready = false;
+let aiConfigured = false;
 const listeners = new Set();
 let password = null; // хранится только в памяти вкладки, не в localStorage
 
@@ -29,7 +30,10 @@ async function api(path, method, body) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error === "unauthorized" ? "unauthorized" : `Ошибка сервера (${res.status})`);
+    if (err.error === "unauthorized") throw new Error("unauthorized");
+    const e = new Error(err.message || `Ошибка сервера (${res.status})`);
+    e.code = err.error;
+    throw e;
   }
   return res.json();
 }
@@ -38,6 +42,7 @@ async function loadInitial() {
   const data = await api("/api/state", "GET");
   seed = data.seed;
   overlay = data.overlay;
+  aiConfigured = !!data.aiConfigured;
   ready = true;
   listeners.forEach((fn) => fn());
 }
@@ -48,6 +53,7 @@ async function refreshOverlay() {
     const changed = JSON.stringify(data.overlay) !== JSON.stringify(overlay);
     seed = data.seed;
     overlay = data.overlay;
+    aiConfigured = !!data.aiConfigured;
     if (changed) listeners.forEach((fn) => fn());
   } catch (e) { /* тихо игнорируем сбой фонового опроса */ }
 }
@@ -60,6 +66,11 @@ export const DB = {
   isReady() { return ready; },
   onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   get() { return buildState(); },
+  async refresh() {
+    const data = await api("/api/state", "GET");
+    seed = data.seed; overlay = data.overlay; aiConfigured = !!data.aiConfigured;
+    listeners.forEach((fn) => fn());
+  },
   getPerson(id) { return this.get().persons.find((p) => p.id === id) || null; },
 
   setPassword(pass) { password = pass; },
@@ -102,6 +113,56 @@ export const DB = {
     overlay = r.overlay;
     listeners.forEach((fn) => fn());
   },
+
+  // ------------------------------------------------------ точки расследования
+  async setInvestigationStatus(personId, gapType, status) {
+    const r = await api(`/api/investigation/${personId}/${gapType}`, "PUT", { password, status });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+  },
+  investigationStatus(personId, gapType) {
+    const rec = overlay?.investigationStatuses?.[`${personId}:${gapType}`];
+    return rec ? rec.status : "unknown";
+  },
+
+  // ------------------------------------------------------------------ заметки
+  async addNote(targetType, targetId, noteType, text) {
+    const r = await api("/api/note", "POST", { password, targetType, targetId, noteType, text });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+    return r.note;
+  },
+  async deleteNote(id) {
+    const r = await api(`/api/note/${id}`, "DELETE", { password });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+  },
+  notesFor(targetType, targetId) {
+    return (overlay?.notes || []).filter((n) => n.targetType === targetType && n.targetId === targetId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  },
+
+  // ---------------------------------------------------------------- кандидаты
+  async addCandidate(data) {
+    const r = await api("/api/candidate", "POST", { password, ...data });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+    return r.candidate;
+  },
+  async updateCandidate(id, patch) {
+    const r = await api(`/api/candidate/${id}`, "PUT", { password, patch });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+  },
+  candidates() { return overlay?.candidates || []; },
+
+  // --------------------------------------------------------------------- AI
+  isAiConfigured() { return !!aiConfigured; },
+  async aiSearchStrategies(personId) { return api("/api/ai/search-strategies", "POST", { password, personId }); },
+  async aiCompareCandidate(personId, candidate, candidateId) { return api("/api/ai/compare-candidate", "POST", { password, personId, candidate, candidateId }); },
+  async aiDossier(personId, style) { return api("/api/ai/dossier", "POST", { password, personId, style }); },
+  async aiSurname(surname, familyContext) { return api("/api/ai/surname", "POST", { password, surname, familyContext }); },
+  async aiHistoricalContext(personId, yearFrom, yearTo) { return api("/api/ai/historical-context", "POST", { password, personId, yearFrom, yearTo }); },
+  async aiAnalyzeBranch(branchLabel, personIds) { return api("/api/ai/analyze-branch", "POST", { password, branchLabel, personIds }); },
 
   parentsOf(id) {
     return this.get().relationships.filter((r) => r.type === "parent" && r.b === id).map((r) => this.getPerson(r.a)).filter(Boolean);

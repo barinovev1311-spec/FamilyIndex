@@ -1,6 +1,7 @@
 import { guessSurnameOrigin, sideLabelForOrigin, stripGenderSuffix } from "./surname-rules.js";
 import { DB } from "./db.js";
 import { generationOffsetRelativeTo, relationPathToMarina } from "./relations.js";
+import { computeGaps, GAP_LABELS, STATUS_LABELS, gapStatusColor } from "./gaps.js";
 
 const app = document.getElementById("app");
 
@@ -104,7 +105,7 @@ document.addEventListener("input", (e) => {
 window.addEventListener("hashchange", render);
 DB.onChange(() => { if (!formDirty) render(); });
 
-const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
+const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["investigation", "Расследование"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
 
 function renderShell() {
   app.innerHTML = `
@@ -284,6 +285,7 @@ function viewHome() {
 
 function originCard(o) {
   const cls = o.side.includes("отца") ? "side-father" : o.side.includes("матери") ? "side-mother" : "side-other";
+  const slotId = `surname-ai-${stripGenderSuffix(o.surname).toLowerCase().replace(/[^a-zа-я]/gi, "")}`;
   return `
     <div class="origin-card ${cls}">
       <div class="side-tag">${esc(o.side)}</div>
@@ -291,6 +293,8 @@ function originCard(o) {
       <p>${esc(o.origin)}</p>
       ${o.note ? `<p class="muted" style="font-size:0.85rem">${esc(o.note)}</p>` : ""}
       ${o.auto ? `<span class="uncertain-tag auto-tag">⚙ автоматически по общим правилам, не проверено</span>` : o.uncertain ? `<span class="uncertain-tag">версия не окончательная</span>` : ""}
+      ${DB.hasSession() ? `<div style="margin-top:10px"><button class="btn btn-small" data-action="ai-surname" data-surname="${esc(o.surname)}" data-slot="${slotId}">🤖 Уточнить через ИИ</button></div>` : ""}
+      <div id="${slotId}"></div>
     </div>
   `;
 }
@@ -335,6 +339,61 @@ function viewOrigins() {
         <p class="lede">Эти фамилии появились в архиве, но для них ещё нет отдельно изученной версии — ниже черновик по общим правилам русской ономастики, не факт. Уточните вручную, если знаете точнее.</p>
       </div>
       <div class="origin-grid">${autoCards.map(originCard).join("")}</div>` : ""}
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------- investigation (kanban)
+
+const KANBAN_COLUMNS = [
+  ["to_check", "Нужно проверить"],
+  ["searching", "Ищу"],
+  ["candidate", "Потенциальные родственники"],
+  ["confirmed", "Подтверждено"],
+  ["rejected", "Отклонено"],
+];
+
+const MATCH_LABELS = { strong: "сильное совпадение", possible: "возможное совпадение", weak: "слабое совпадение" };
+const MATCH_CLASS = { strong: "match-strong", possible: "match-possible", weak: "match-weak" };
+
+function candidateCard(c) {
+  const anchor = c.personId ? DB.getPerson(c.personId) : null;
+  return `
+    <div class="cand-card">
+      <div class="cand-card-name">${esc(c.name)}</div>
+      <div class="muted-small">${esc(c.birthYear || "?")}${c.deathYear ? "–" + esc(c.deathYear) : ""} ${c.place ? "· " + esc(c.place) : ""}</div>
+      ${anchor ? `<div class="muted-small">к: <a href="#/person/${anchor.id}">${esc(fullName(anchor))}</a> ${c.assumedRelation ? "(" + esc(c.assumedRelation) + ")" : ""}</div>` : ""}
+      ${c.foundInfo ? `<p class="muted-small">${esc(c.foundInfo)}</p>` : ""}
+      ${c.matchStrength ? `<span class="match-badge ${MATCH_CLASS[c.matchStrength]}">${esc(MATCH_LABELS[c.matchStrength])}</span>` : ""}
+      ${c.matchingFacts && c.matchingFacts.length ? `<ul class="reasons">${c.matchingFacts.map((f) => `<li class="reason-pos">+ ${esc(f)}</li>`).join("")}</ul>` : ""}
+      ${c.contradictions && c.contradictions.length ? `<ul class="reasons">${c.contradictions.map((f) => `<li class="reason-neg">− ${esc(f)}</li>`).join("")}</ul>` : ""}
+      ${c.aiExplanation ? `<p class="muted-small">${esc(c.aiExplanation)}</p>` : ""}
+      ${c.sourceUrl ? `<a class="muted-small" href="${esc(c.sourceUrl)}" target="_blank" rel="noopener">источник →</a>` : ""}
+      ${DB.hasSession() ? `
+        <div class="cand-actions">
+          ${c.status !== "confirmed" && c.status !== "rejected" ? `<button class="btn btn-small" data-action="cand-ai-compare" data-id="${c.id}">🤖 Сравнить</button>` : ""}
+          ${c.status === "confirmed" || c.status === "rejected" ? "" : `<button class="btn btn-small btn-primary" data-action="cand-confirm" data-id="${c.id}">Добавить в дерево</button>
+          <button class="btn btn-small btn-danger" data-action="cand-reject" data-id="${c.id}">Отклонить</button>
+          <button class="btn btn-small" data-action="cand-continue" data-id="${c.id}">Продолжить поиск</button>`}
+        </div>` : ""}
+    </div>
+  `;
+}
+
+function viewInvestigation() {
+  const all = DB.candidates();
+  return `
+    <div class="page">
+      <div class="page-head"><div><span class="eyebrow">Расследование</span><h1>Потенциальные родственники</h1>
+      <p class="lede">Кандидаты появляются здесь, когда вы сохраняете найденного человека через кнопку «🤖 Искать» на точке расследования. Отклонённые не удаляются — чтобы не предлагать их снова.</p></div></div>
+      <div class="kanban">
+        ${KANBAN_COLUMNS.map(([key, title]) => {
+          const items = all.filter((c) => c.status === key);
+          return `<div class="kanban-col"><h3>${title} <span class="muted-small">(${items.length})</span></h3>
+            <div class="kanban-items">${items.length === 0 ? `<p class="muted-small">пусто</p>` : items.map(candidateCard).join("")}</div>
+          </div>`;
+        }).join("")}
+      </div>
     </div>
   `;
 }
@@ -384,6 +443,7 @@ function viewTree() {
         <div><span class="eyebrow">Родословная</span><h1>Дерево рода</h1></div>
         <div style="display:flex;gap:8px">
           <button class="btn" data-action="print-page">Печать</button>
+          ${gapToggleButton()}
           ${DB.hasSession() ? `<a class="btn btn-primary" href="#/admin">+ Добавить человека</a>` : ""}
         </div>
       </div>
@@ -399,15 +459,22 @@ function personCard(p) {
   const branch = branchClass(p);
   const photos = personPhotos(p);
   const photo = photos.length ? `<img class="person-photo" src="${photos[0]}" alt="">` : `<div class="person-photo-placeholder avatar-${branch}">${esc((p.firstName || "?")[0])}</div>`;
+  const gaps = window.__showGaps ? computeGaps(p, DB) : [];
   return `
     <a class="person-card branch-${branch}" href="#/person/${p.id}">
       ${p.isLiving ? `<span class="living-dot" title="жив(а)"></span>` : ""}
+      ${gaps.length ? `<span class="gap-marker" title="${gaps.length} ${gaps.length === 1 ? "точка расследования" : "точки расследования"}">?</span>` : ""}
       ${photo}
       <div class="person-name">${esc(fullName(p))}</div>
       <div class="person-dates">${esc(shortDates(p))}</div>
       <div class="person-relation">${esc(p._meta.relationToMarina)}</div>
     </a>
   `;
+}
+
+function gapToggleButton() {
+  const on = !!window.__showGaps;
+  return `<button class="btn ${on ? "btn-primary" : ""}" data-action="toggle-gaps">🔎 ${on ? "Скрыть" : "Показать"} точки расследования</button>`;
 }
 
 function emptyState(title, body) {
@@ -429,7 +496,10 @@ function viewPeople() {
     <div class="page">
       <div class="page-head">
         <div><span class="eyebrow">${db.persons.length} человек</span><h1>Все люди в архиве</h1></div>
-        ${DB.hasSession() ? `<a class="btn btn-primary" href="#/admin">+ Добавить человека</a>` : ""}
+        <div style="display:flex;gap:8px">
+          ${gapToggleButton()}
+          ${DB.hasSession() ? `<a class="btn btn-primary" href="#/admin">+ Добавить человека</a>` : ""}
+        </div>
       </div>
       <input class="search-box" type="search" placeholder="Найти по имени…" value="${esc(window.__peopleQ || "")}" data-action="people-search">
       <div class="filter-row">${sides.map(([k, l]) => `<button class="chip ${sideFilter === k ? "active" : ""}" data-action="people-side" data-side="${k}">${l}</button>`).join("")}</div>
@@ -440,6 +510,113 @@ function viewPeople() {
 
 // -------------------------------------------------------------- person detail
 
+function investigationSection(p) {
+  const gaps = computeGaps(p, DB);
+  return `
+    <div class="panel" id="investigation-panel">
+      <h4 class="eyebrow">🔎 Точки расследования</h4>
+      ${gaps.length === 0 ? `<p class="muted-small">Явных пробелов не обнаружено.</p>` : `<div class="gap-list">${gaps.map((g) => gapCard(p, g)).join("")}</div>`}
+    </div>
+  `;
+}
+
+function closeLabel(type) {
+  return { children: "детей не было", spouse: "брака не было", siblings: "братьев/сестёр не было",
+    father: "отец неизвестен окончательно", mother: "мать неизвестна окончательно", parents: "родители неизвестны окончательно",
+    maidenName: "не применимо", dates: "не применимо", places: "не применимо" }[type] || "закрыть точку";
+}
+
+function gapCard(p, g) {
+  return `
+    <div class="gap-card">
+      <div class="gap-card-head">
+        <span class="gap-dot ${gapStatusColor(g.status)}"></span>
+        <strong>${esc(g.label)}</strong>
+        <span class="gap-status-label">${esc(STATUS_LABELS[g.status])}</span>
+      </div>
+      ${DB.hasSession() ? `
+        <div class="gap-actions">
+          <button class="btn btn-small" data-action="quick-add-open" data-id="${p.id}">Добавить родственника</button>
+          <button class="btn btn-small" data-action="gap-search" data-id="${p.id}" data-gap="${g.type}">🤖 Искать</button>
+          <button class="btn btn-small" data-action="gap-status" data-id="${p.id}" data-gap="${g.type}" data-status="researching">Отметить как исследуемое</button>
+          <button class="btn btn-small btn-danger" data-action="gap-status" data-id="${p.id}" data-gap="${g.type}" data-status="closed_manually">Закрыть: ${esc(closeLabel(g.type))}</button>
+        </div>
+        <div id="gap-slot-${p.id}-${g.type}"></div>
+        ${notesSection("investigation", `${p.id}:${g.type}`, true)}
+      ` : ""}
+    </div>
+  `;
+}
+
+const NOTE_TYPE_LABELS = { memory: "семейное воспоминание", told_by_relative: "со слов родственника", hypothesis: "гипотеза", to_verify: "нужно проверить", general: "обычная заметка" };
+
+function notesSection(targetType, targetId, compact) {
+  const notes = DB.notesFor(targetType, targetId);
+  return `
+    <div class="${compact ? "notes-mini" : "panel"}">
+      ${compact ? "" : `<h4 class="eyebrow">Заметки</h4>`}
+      ${notes.length === 0 ? (compact ? "" : `<p class="muted-small">пока нет заметок</p>`) : `<ul class="note-list">${notes.map((n) => `
+        <li class="note-item">
+          <span class="note-type-badge">${esc(NOTE_TYPE_LABELS[n.noteType] || n.noteType)}</span>
+          <p>${esc(n.text)}</p>
+          <span class="muted" style="font-size:0.72rem">${new Date(n.createdAt).toLocaleDateString("ru-RU")}</span>
+          ${DB.hasSession() ? `<button class="btn btn-small btn-danger" data-action="delete-note" data-id="${n.id}">✕</button>` : ""}
+        </li>`).join("")}</ul>`}
+      ${DB.hasSession() ? `<button class="btn btn-small" data-action="open-note-form" data-target-type="${targetType}" data-target-id="${targetId}">+ Добавить заметку</button>
+      <div id="note-form-slot-${targetType}-${targetId}"></div>` : ""}
+    </div>
+  `;
+}
+
+function noteForm(targetType, targetId) {
+  return `
+    <form data-form="add-note" data-target-type="${targetType}" data-target-id="${targetId}" style="margin-top:10px">
+      <select class="input" name="noteType" style="margin-bottom:8px">
+        <option value="memory">семейное воспоминание</option>
+        <option value="told_by_relative">со слов родственника</option>
+        <option value="hypothesis">гипотеза</option>
+        <option value="to_verify">нужно проверить</option>
+        <option value="general" selected>обычная заметка</option>
+      </select>
+      <textarea class="input" name="text" rows="2" placeholder="Например: бабушка говорила, что у него был брат, который жил в Ленинграде" required></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-small btn-primary" type="submit">Сохранить</button>
+        <button class="btn btn-small" type="button" data-action="close-note-form" data-target-type="${targetType}" data-target-id="${targetId}">Отмена</button>
+      </div>
+    </form>
+  `;
+}
+
+function aiErrorBox(err) {
+  if (err.code === "ai_not_configured") return `<p class="muted-small" style="color:var(--gold)">ИИ пока не настроен на сервере — нужно задать переменную окружения <code>DEEPSEEK_API_KEY</code>.</p>`;
+  return `<p class="muted-small" style="color:var(--coral)">Не удалось получить ответ ИИ: ${esc(err.message)}</p>`;
+}
+
+function searchStrategiesBlock(personId, gapType, result) {
+  return `
+    <div class="ai-result">
+      <p class="muted-small">${esc(result.strategyNotes || "")}</p>
+      <ul class="query-list">${(result.queries || []).map((q) => `<li><code>${esc(q)}</code></li>`).join("")}</ul>
+      <button class="btn btn-small btn-primary" data-action="open-candidate-form" data-id="${personId}" data-gap="${gapType}">Сохранить найденного кандидата</button>
+      <div id="candidate-form-slot-${personId}-${gapType}"></div>
+    </div>
+  `;
+}
+
+function candidateForm(personId, gapType) {
+  return `
+    <form data-form="add-candidate" data-person="${personId}" data-gap="${gapType}" class="form-grid" style="margin-top:10px">
+      <label>ФИО кандидата <input class="input" name="name" required></label>
+      <label>Год рождения <input class="input input-narrow" name="birthYear" type="number"></label>
+      <label>Год смерти <input class="input input-narrow" name="deathYear" type="number"></label>
+      <label>Место <input class="input" name="place"></label>
+      <label>Предполагаемая связь <input class="input" name="assumedRelation" placeholder="напр. брат отца"></label>
+      <label class="block">Что удалось найти <textarea class="input" name="foundInfo" rows="2"></textarea></label>
+      <label>Ссылка на источник <input class="input" name="sourceUrl" type="url"></label>
+      <button class="btn btn-small btn-primary" type="submit">Добавить в «Расследование»</button>
+    </form>
+  `;
+}
 function relationChain(id) {
   const db = DB.get();
   const chain = relationPathToMarina(id, db.persons, db.relationships, db.marinaId);
@@ -478,9 +655,11 @@ function viewPerson(id) {
           <span class="relation-badge">${esc(p._meta.relationToMarina)}</span>
           <h1>${esc(fullName(p))}</h1>
           <p class="muted">${esc(shortDates(p))} ${p.birthPlace ? "· " + esc(p.birthPlace) : ""}</p>
-          ${DB.hasSession() ? `<div style="display:flex;gap:8px;margin-top:16px"><button class="btn btn-small" data-action="edit-person" data-id="${p.id}">Редактировать</button><button class="btn btn-small" data-action="quick-add-open" data-id="${p.id}">+ Родственник</button></div>` : ""}
+          ${DB.hasSession() ? `<div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap"><button class="btn btn-small" data-action="edit-person" data-id="${p.id}">Редактировать</button><button class="btn btn-small" data-action="quick-add-open" data-id="${p.id}">+ Родственник</button><button class="btn btn-small" data-action="ai-dossier" data-id="${p.id}">🤖 Создать досье</button></div>` : ""}
         </div>
       </div>
+
+      <div id="dossier-slot"></div>
 
       ${photos.length > 1 ? `<div class="person-gallery">${photos.map((src, i) => `<img src="${src}" data-action="open-lightbox" data-photos='${esc(JSON.stringify(photos))}' data-index="${i}" alt="">`).join("")}</div>` : ""}
 
@@ -492,7 +671,10 @@ function viewPerson(id) {
       </div>
 
       ${p.bio ? `<div class="panel"><h4 class="eyebrow">Чем известен(на) / жизненный путь</h4><p>${esc(p.bio)}</p></div>` : ""}
-      ${p.notes ? `<div class="panel"><h4 class="eyebrow">Заметки</h4><p>${esc(p.notes)}</p></div>` : ""}
+      ${p.notes ? `<div class="panel"><h4 class="eyebrow">Заметки (старое поле)</h4><p>${esc(p.notes)}</p></div>` : ""}
+
+      ${investigationSection(p)}
+      ${notesSection("person", p.id)}
 
       <div id="quick-add-slot"></div>
       <div id="edit-person-slot"></div>
@@ -991,6 +1173,20 @@ function readPersonForm(form) {
   };
 }
 
+function normalizeNameForDedup(s) {
+  return (s || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]/gi, "");
+}
+function findPossibleDuplicate(lastName, firstName, byYear) {
+  const target = normalizeNameForDedup(lastName) + normalizeNameForDedup(firstName);
+  if (!target) return null;
+  return DB.get().persons.find((p) => {
+    const key = normalizeNameForDedup(p.lastName) + normalizeNameForDedup(p.firstName);
+    if (key !== target) return false;
+    if (byYear) { const existingYear = birthYear(p); if (existingYear && Math.abs(existingYear - byYear) > 2) return false; }
+    return true;
+  }) || null;
+}
+
 function resizeImageFile(file, maxW, cb) {
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -1153,6 +1349,7 @@ function render() {
   let inner, after = null;
   if (view === "tree") inner = viewTree();
   else if (view === "scheme") { inner = viewScheme(); after = initSchemeInteraction; }
+  else if (view === "investigation") inner = viewInvestigation();
   else if (view === "timeline") inner = viewTimeline();
   else if (view === "dates") inner = viewDates();
   else if (view === "people") inner = viewPeople();
@@ -1210,6 +1407,120 @@ document.addEventListener("click", (e) => {
   if (action === "export-backup") download("skryabin-family-backup.json", DB.exportJSON(), "application/json");
   if (action === "reset-overlay") {
     if (confirm("Все правки будут удалены для всех посетителей, останутся только исходные данные. Продолжить?")) guarded(() => DB.resetOverlay());
+  }
+
+  // ------------------------------------------------------ точки расследования
+  if (action === "toggle-gaps") { window.__showGaps = !window.__showGaps; render(); }
+
+  if (action === "gap-status") {
+    guarded(() => DB.setInvestigationStatus(btn.dataset.id, btn.dataset.gap, btn.dataset.status));
+  }
+
+  if (action === "gap-search") {
+    const personId = btn.dataset.id, gapType = btn.dataset.gap;
+    const slot = document.getElementById(`gap-slot-${personId}-${gapType}`);
+    if (slot) slot.innerHTML = `<p class="muted-small">🤖 Спрашиваем ИИ про стратегию поиска…</p>`;
+    DB.aiSearchStrategies(personId).then((result) => {
+      if (slot) slot.innerHTML = searchStrategiesBlock(personId, gapType, result);
+    }).catch((err) => { if (slot) slot.innerHTML = aiErrorBox(err); });
+  }
+
+  if (action === "open-candidate-form") {
+    const slot = document.getElementById(`candidate-form-slot-${btn.dataset.id}-${btn.dataset.gap}`);
+    if (slot) slot.innerHTML = candidateForm(btn.dataset.id, btn.dataset.gap);
+  }
+
+  // ------------------------------------------------------------------ заметки
+  if (action === "open-note-form" || action === "gap-note-open") {
+    const targetType = btn.dataset.targetType || "investigation";
+    const targetId = btn.dataset.targetId || `${btn.dataset.id}:${btn.dataset.gap}`;
+    const slot = document.getElementById(`note-form-slot-${targetType}-${targetId}`);
+    if (slot) slot.innerHTML = noteForm(targetType, targetId);
+  }
+  if (action === "close-note-form") {
+    const slot = document.getElementById(`note-form-slot-${btn.dataset.targetType}-${btn.dataset.targetId}`);
+    if (slot) slot.innerHTML = "";
+  }
+  if (action === "delete-note") {
+    if (confirm("Удалить заметку?")) guarded(() => DB.deleteNote(btn.dataset.id));
+  }
+
+  // ---------------------------------------------------------------- кандидаты
+  if (action === "cand-reject") guarded(() => DB.updateCandidate(btn.dataset.id, { status: "rejected" }));
+  if (action === "cand-continue") guarded(() => DB.updateCandidate(btn.dataset.id, { status: "searching" }));
+
+  if (action === "cand-ai-compare") {
+    const c = DB.candidates().find((x) => x.id === btn.dataset.id);
+    if (!c || !c.personId) return;
+    btn.disabled = true; btn.textContent = "Сравниваем…";
+    DB.aiCompareCandidate(c.personId, c, c.id).then(() => DB.refresh()).catch((err) => {
+      toast(err.code === "ai_not_configured" ? "ИИ не настроен на сервере." : "Не удалось сравнить: " + err.message, true);
+    }).finally(() => { btn.disabled = false; btn.textContent = "🤖 Сравнить"; });
+  }
+
+  if (action === "cand-confirm") {
+    const c = DB.candidates().find((x) => x.id === btn.dataset.id);
+    if (!c) return;
+    const dup = findPossibleDuplicate(c.name.split(/\s+/)[0], c.name.split(/\s+/)[1], c.birthYear ? Number(c.birthYear) : null);
+    if (dup && !confirm(`Похожий человек уже есть в архиве: «${fullName(dup)}». Всё равно добавить нового?`)) return;
+    guarded(async () => {
+      const parts = c.name.split(/\s+/);
+      const created = await DB.addPerson({
+        lastName: parts.length > 1 ? parts[0] : "", firstName: parts.length > 1 ? parts[1] : parts[0], middleName: parts[2] || "",
+        birth: c.birthYear ? { mode: "year", year: c.birthYear } : { mode: "unknown" },
+        death: c.deathYear ? { mode: "year", year: c.deathYear } : { mode: "unknown" },
+        birthPlace: c.place || "", bio: c.foundInfo || "",
+      });
+      if (c.personId && c.gapType) {
+        const relMap = { father: ["up", "parent"], mother: ["up", "parent"], parents: ["up", "parent"], spouse: ["side", "spouse"], children: ["down", "parent"], siblings: ["side", "sibling"] };
+        const [dir, type] = relMap[c.gapType] || ["side", "sibling"];
+        if (type === "parent") await (dir === "up" ? DB.addRelationship(created.id, c.personId, "parent") : DB.addRelationship(c.personId, created.id, "parent"));
+        else await DB.addRelationship(c.personId, created.id, type);
+      }
+      await DB.updateCandidate(c.id, { status: "confirmed" });
+      toast("Добавлено в дерево.");
+    });
+  }
+
+  // --------------------------------------------------------------------- AI
+  if (action === "ai-dossier") {
+    const personId = btn.dataset.id;
+    const slot = document.getElementById("dossier-slot");
+    btn.disabled = true; btn.textContent = "Собираем…";
+    DB.aiDossier(personId, "factual").then((d) => {
+      slot.innerHTML = `
+        <div class="panel">
+          <h4 class="eyebrow">🤖 Досье (по имеющимся данным)</h4>
+          ${d.basics ? `<p><strong>Основное:</strong> ${esc(d.basics)}</p>` : ""}
+          ${d.parents ? `<p><strong>Родители:</strong> ${esc(d.parents)}</p>` : ""}
+          ${d.family ? `<p><strong>Семья:</strong> ${esc(d.family)}</p>` : ""}
+          ${d.children ? `<p><strong>Дети:</strong> ${esc(d.children)}</p>` : ""}
+          ${d.places ? `<p><strong>Места:</strong> ${esc(d.places)}</p>` : ""}
+          ${d.events ? `<p><strong>События:</strong> ${esc(d.events)}</p>` : ""}
+          ${d.known ? `<p class="muted-small"><strong>Известно точно:</strong> ${esc(d.known)}</p>` : ""}
+          ${d.unknown ? `<p class="muted-small"><strong>Остаётся неизвестным:</strong> ${esc(d.unknown)}</p>` : ""}
+        </div>`;
+    }).catch((err) => { slot.innerHTML = `<div class="panel">${aiErrorBox(err)}</div>`; })
+      .finally(() => { btn.disabled = false; btn.textContent = "🤖 Создать досье"; });
+  }
+
+  if (action === "ai-surname") {
+    const surname = btn.dataset.surname, slotId = btn.dataset.slot;
+    const slot = document.getElementById(slotId);
+    btn.disabled = true; btn.textContent = "Спрашиваем ИИ…";
+    const members = DB.get().persons.filter((p) => stripGenderSuffix(p.lastName).toLowerCase() === stripGenderSuffix(surname).toLowerCase()).map(fullName).join(", ");
+    DB.aiSurname(surname, members).then((r) => {
+      slot.innerHTML = `
+        <div class="ai-result">
+          <p>${esc(r.etymology || "")}</p>
+          ${r.variants && r.variants.length ? `<p class="muted-small">Варианты написания: ${r.variants.map(esc).join(", ")}</p>` : ""}
+          ${r.historicalDistribution ? `<p class="muted-small">${esc(r.historicalDistribution)}</p>` : ""}
+          ${r.regions ? `<p class="muted-small">Регионы: ${esc(r.regions)}</p>` : ""}
+          ${r.additionalNotes ? `<p class="muted-small">${esc(r.additionalNotes)}</p>` : ""}
+          <p class="uncertain-tag auto-tag" style="display:inline-block">${esc(r.disclaimer || "Общие сведения об ономастике, не доказанная история семьи")}</p>
+        </div>`;
+    }).catch((err) => { slot.innerHTML = aiErrorBox(err); })
+      .finally(() => { btn.disabled = false; btn.textContent = "🤖 Уточнить через ИИ"; });
   }
 });
 
@@ -1296,7 +1607,10 @@ document.addEventListener("submit", (e) => {
   }
 
   if (kind === "new-person") {
-    withSubmitLoading(form, "Сохраняем…", () => guarded(async () => { const created = await DB.addPerson(readPersonForm(form)); location.hash = "#/person/" + created.id; }));
+    const data = readPersonForm(form);
+    const dup = findPossibleDuplicate(data.lastName, data.firstName, birthYear(data));
+    if (dup && !confirm(`Похожий человек уже есть в архиве: «${fullName(dup)}» (${shortDates(dup)}). Всё равно создать нового?`)) return;
+    withSubmitLoading(form, "Сохраняем…", () => guarded(async () => { const created = await DB.addPerson(data); location.hash = "#/person/" + created.id; }));
   }
 
   if (kind === "edit-person") {
@@ -1315,6 +1629,8 @@ document.addEventListener("submit", (e) => {
         const raw = (form.newName.value || "").trim();
         if (!raw) { toast("Введите имя.", true); return; }
         const parts = raw.split(/\s+/);
+        const dup = findPossibleDuplicate(parts.length > 1 ? parts[0] : "", parts.length > 1 ? parts[1] : parts[0], null);
+        if (dup && !confirm(`Похожий человек уже есть в архиве: «${fullName(dup)}». Всё равно создать нового?`)) return;
         const created = await DB.addPerson({ lastName: parts.length > 1 ? parts[0] : "", firstName: parts.length > 1 ? parts[1] : parts[0], middleName: parts[2] || "", gender: def.gender || "unknown" });
         otherId = created.id;
       }
@@ -1323,6 +1639,35 @@ document.addEventListener("submit", (e) => {
       else if (def.type === "sibling") await DB.addRelationship(personId, otherId, "sibling");
       document.getElementById("quick-add-slot").innerHTML = "";
       toast("Добавлено.");
+    }));
+  }
+
+  if (kind === "add-note") {
+    const targetType = form.dataset.targetType, targetId = form.dataset.targetId;
+    withSubmitLoading(form, "Сохраняем…", () => guarded(async () => {
+      await DB.addNote(targetType, targetId, form.noteType.value, form.text.value.trim());
+      const slot = document.getElementById(`note-form-slot-${targetType}-${targetId}`);
+      if (slot) slot.innerHTML = "";
+      toast("Заметка сохранена.");
+    }));
+  }
+
+  if (kind === "add-candidate") {
+    const personId = form.dataset.person, gapType = form.dataset.gap;
+    const fd = new FormData(form);
+    const sourceUrl = fd.get("sourceUrl")?.trim();
+    withSubmitLoading(form, "Сохраняем…", () => guarded(async () => {
+      await DB.addCandidate({
+        personId, gapType,
+        name: fd.get("name")?.trim() || "", birthYear: fd.get("birthYear") || "", deathYear: fd.get("deathYear") || "",
+        place: fd.get("place")?.trim() || "", assumedRelation: fd.get("assumedRelation")?.trim() || "",
+        foundInfo: fd.get("foundInfo")?.trim() || "", sourceUrl: sourceUrl || "",
+        sources: sourceUrl ? [{ url: sourceUrl }] : [],
+      });
+      await DB.setInvestigationStatus(personId, gapType, "candidate_found");
+      const slot = document.getElementById(`candidate-form-slot-${personId}-${gapType}`);
+      if (slot) slot.innerHTML = "";
+      toast("Кандидат добавлен в «Расследование».");
     }));
   }
 });
