@@ -19,7 +19,7 @@ const crypto = require("crypto");
 const ROOT = __dirname;
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Skryabin1990";
-const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
+const DATA_DIR = process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(ROOT, "data");
 const SEED_PATH = path.join(ROOT, "data", "seed.json"); // исходный снимок — не редактируется API
 const OVERLAY_PATH = path.join(DATA_DIR, "overlay.json"); // правки — редактируется API
 
@@ -30,10 +30,13 @@ const MIME = {
 };
 
 function ensureOverlay() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(OVERLAY_PATH)) {
+  const dirExistedBefore = fs.existsSync(DATA_DIR);
+  if (!dirExistedBefore) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const fileExistedBefore = fs.existsSync(OVERLAY_PATH);
+  if (!fileExistedBefore) {
     fs.writeFileSync(OVERLAY_PATH, JSON.stringify({ addedPersons: [], addedRelationships: [], edits: {}, deleted: [] }, null, 2));
   }
+  return { dirExistedBefore, fileExistedBefore };
 }
 function readOverlay() {
   ensureOverlay();
@@ -181,5 +184,20 @@ const server = http.createServer((req, res) => {
   });
 });
 
-ensureOverlay();
+const { dirExistedBefore, fileExistedBefore } = ensureOverlay();
+
+// --------------------------------------------------------- диагностика
+// Смотрите эти строки в Railway → Deployments → (последний деплой) → Logs
+// сразу после старта. Помогают понять, ПОЧЕМУ данные слетают при деплое.
+console.log("=== Диагностика хранения данных ===");
+console.log("DATA_DIR (куда реально пишем overlay.json):", DATA_DIR);
+console.log("Ручная переменная DATA_DIR задана:", process.env.DATA_DIR ? `да, "${process.env.DATA_DIR}"` : "нет");
+console.log("Railway сообщил путь смонтированного Volume (RAILWAY_VOLUME_MOUNT_PATH):", process.env.RAILWAY_VOLUME_MOUNT_PATH || "НЕТ — значит, к этому сервису сейчас не подключён ни один Volume. Это самая частая причина: Volume создан, но привязан к другому сервису в проекте, либо не привязан вовсе.");
+console.log("Папка данных уже существовала до старта:", dirExistedBefore ? "ДА — это старый, реально смонтированный диск, хороший знак" : "НЕТ, создана только что — если ожидали найти прошлые данные, значит пишем не туда");
+console.log("Файл overlay.json уже существовал до старта:", fileExistedBefore ? "ДА — данные из прошлого раза найдены" : "НЕТ — создан заново пустым (если фото были раньше, они только что потеряны)");
+if (process.env.DATA_DIR && process.env.RAILWAY_VOLUME_MOUNT_PATH && process.env.DATA_DIR !== process.env.RAILWAY_VOLUME_MOUNT_PATH) {
+  console.log(`⚠ Ручная DATA_DIR ("${process.env.DATA_DIR}") НЕ совпадает с фактическим Volume ("${process.env.RAILWAY_VOLUME_MOUNT_PATH}"). Можно просто удалить переменную DATA_DIR — теперь сервер сам подхватит правильный путь автоматически.`);
+}
+console.log("=====================================");
+
 server.listen(PORT, () => console.log(`Skryabin family site + API listening on port ${PORT}`));

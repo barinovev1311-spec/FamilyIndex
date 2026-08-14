@@ -91,7 +91,7 @@ function currentRoute() {
 window.addEventListener("hashchange", render);
 DB.onChange(render);
 
-const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["timeline", "Хронология"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
+const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
 
 function renderShell() {
   app.innerHTML = `
@@ -802,6 +802,98 @@ function viewTimeline() {
   `;
 }
 
+// -------------------------------------------------------------- dates (birthdays + memorial calendar)
+
+const RU_MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const RU_MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+
+function ruPlural(n, forms) {
+  const abs = Math.abs(n) % 100;
+  const n1 = abs % 10;
+  if (abs > 10 && abs < 20) return forms[2];
+  if (n1 > 1 && n1 < 5) return forms[1];
+  if (n1 === 1) return forms[0];
+  return forms[2];
+}
+
+function buildDateSchedule(persons, field) {
+  const today = new Date();
+  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const items = [];
+  persons.forEach((p) => {
+    const d = p[field];
+    if (!d || d.mode !== "exact" || !d.exact) return;
+    const parsed = new Date(d.exact + "T00:00:00");
+    if (isNaN(parsed.getTime())) return;
+    const month = parsed.getMonth(), day = parsed.getDate(), origYear = parsed.getFullYear();
+    let candidate = new Date(todayMidnight.getFullYear(), month, day);
+    if (candidate < todayMidnight) candidate = new Date(todayMidnight.getFullYear() + 1, month, day);
+    const daysUntil = Math.round((candidate - todayMidnight) / 86400000);
+    const years = candidate.getFullYear() - origYear;
+    items.push({ p, month, day, daysUntil, years });
+  });
+  items.sort((a, b) => a.daysUntil - b.daysUntil);
+  return items;
+}
+
+function dateBadge(daysUntil) {
+  if (daysUntil === 0) return `<span class="date-badge today">сегодня</span>`;
+  if (daysUntil === 1) return `<span class="date-badge soon">завтра</span>`;
+  if (daysUntil <= 7) return `<span class="date-badge soon">через ${daysUntil} ${ruPlural(daysUntil, ["день", "дня", "дней"])}</span>`;
+  return `<span class="date-badge">через ${daysUntil} ${ruPlural(daysUntil, ["день", "дня", "дней"])}</span>`;
+}
+
+function dateRow(item, kind) {
+  const { p, month, day, years } = item;
+  const branch = branchClass(p);
+  const photos = personPhotos(p);
+  const avatar = photos.length ? `<img class="calendar-avatar" src="${photos[0]}" alt="">` : `<div class="calendar-avatar-placeholder avatar-${branch}">${esc((p.firstName || "?")[0])}</div>`;
+  const sub = kind === "birthday"
+    ? `исполнится ${years} ${ruPlural(years, ["год", "года", "лет"])}`
+    : `${years} ${ruPlural(years, ["год", "года", "лет"])} со дня памяти`;
+  return `
+    <a class="calendar-row" href="#/person/${p.id}">
+      <div class="calendar-date"><span class="cal-day">${day}</span><span class="cal-month">${RU_MONTHS_SHORT[month]}</span></div>
+      ${avatar}
+      <div class="calendar-info"><div class="calendar-name">${esc(fullName(p))}</div><div class="calendar-sub muted">${esc(sub)}</div></div>
+      ${dateBadge(item.daysUntil)}
+    </a>
+  `;
+}
+
+function viewDates() {
+  const db = DB.get();
+  const living = db.persons.filter((p) => p.isLiving);
+  const deceased = db.persons.filter((p) => !p.isLiving);
+  const birthdays = buildDateSchedule(living, "birth");
+  const memorials = buildDateSchedule(deceased, "death");
+  const livingMissing = living.length - birthdays.length;
+  const deceasedMissing = deceased.length - memorials.length;
+
+  return `
+    <div class="page">
+      <div class="page-head"><div><span class="eyebrow">Семейный календарь</span><h1>Даты</h1>
+      <p class="lede">Дни рождения живых родственников и дни памяти ушедших — по точным датам, какие есть в архиве. Отсортировано по ближайшей дате от сегодняшнего дня.</p></div></div>
+
+      <div class="dates-columns">
+        <section>
+          <h2><span class="legend-dot" style="background:var(--teal)"></span>Дни рождения</h2>
+          ${birthdays.length === 0 ? emptyState("Пока пусто", "Ни у кого из живых родственников нет точной даты рождения в архиве.") : `
+            <div class="calendar-list">${birthdays.map((i) => dateRow(i, "birthday")).join("")}</div>`}
+          ${livingMissing > 0 ? `<p class="muted" style="font-size:0.85rem;margin-top:14px">Ещё у ${livingMissing} ${ruPlural(livingMissing, ["живого родственника", "живых родственников", "живых родственников"])} нет точной даты рождения — как только она появится в карточке, человек попадёт в это расписание.</p>` : ""}
+        </section>
+
+        <section>
+          <h2><span class="legend-dot" style="background:var(--ink-faint)"></span>Дни памяти</h2>
+          ${memorials.length === 0 ? emptyState("Пока пусто", "Ни у кого из ушедших родственников нет точной даты в архиве.") : `
+            <div class="calendar-list">${memorials.map((i) => dateRow(i, "memorial")).join("")}</div>`}
+          ${deceasedMissing > 0 ? `<p class="muted" style="font-size:0.85rem;margin-top:14px">Ещё у ${deceasedMissing} ${ruPlural(deceasedMissing, ["человека", "человек", "человек"])} нет точной даты кончины в архиве.</p>` : ""}
+        </section>
+      </div>
+    </div>
+  `;
+}
+
 // -------------------------------------------------------------- admin: shared form pieces
 
 function dateFieldset(prefix, label, d = { mode: "unknown" }) {
@@ -1048,6 +1140,7 @@ function render() {
   if (view === "tree") inner = viewTree();
   else if (view === "scheme") { inner = viewScheme(); after = initSchemeInteraction; }
   else if (view === "timeline") inner = viewTimeline();
+  else if (view === "dates") inner = viewDates();
   else if (view === "people") inner = viewPeople();
   else if (view === "person") inner = viewPerson(id);
   else if (view === "origins") inner = viewOrigins();
