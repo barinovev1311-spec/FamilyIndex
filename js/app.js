@@ -88,8 +88,21 @@ function currentRoute() {
   const [view, id] = hash.split("/");
   return { view: view || "home", id };
 }
+
+// Пока идёт ввод в любую форму (например, Марина заполняет карточку
+// нового человека), фоновая проверка обновлений НЕ должна перерисовывать
+// страницу — иначе введённый текст физически стирается вместе со всей
+// формой. formDirty взводится при первом же вводе и сбрасывается при
+// любой намеренной перерисовке (переход по ссылке, клик по вкладке,
+// собственное сохранение) — то есть блокирует только фоновый, незаметный
+// для пользователя триггер.
+let formDirty = false;
+document.addEventListener("input", (e) => {
+  if (e.target.closest && e.target.closest("[data-form]")) formDirty = true;
+});
+
 window.addEventListener("hashchange", render);
-DB.onChange(render);
+DB.onChange(() => { if (!formDirty) render(); });
 
 const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
 
@@ -1133,6 +1146,7 @@ function adminBackupTab() {
 // -------------------------------------------------------------- render
 
 function render() {
+  formDirty = false;
   if (!document.getElementById("route-outlet")) renderShell();
   if (!DB.isReady()) { setOutlet(loadingScreen(), "__loading"); return; }
   const { view, id } = currentRoute();
