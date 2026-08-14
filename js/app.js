@@ -1,5 +1,5 @@
 import { DB } from "./db.js";
-import { generationOffsetRelativeTo } from "./relations.js";
+import { generationOffsetRelativeTo, relationPathToMarina } from "./relations.js";
 
 const app = document.getElementById("app");
 
@@ -33,11 +33,23 @@ function birthYear(p) {
   if (b.from) return Number(b.from);
   return null;
 }
+function deathYear(p) {
+  const d = p?.death;
+  if (!d || p.isLiving) return null;
+  if (d.exact) { const m = String(d.exact).match(/\d{4}/); if (m) return Number(m[0]); }
+  if (d.year) return Number(d.year);
+  if (d.from) return Number(d.from);
+  return null;
+}
 function branchClass(p) {
   if (p._meta?.side === "father") return "father";
   if (p._meta?.side === "mother") return "mother";
   if (p._meta?.side === "husband") return "husband";
   return "plain";
+}
+function personPhotos(p) {
+  if (Array.isArray(p.photos) && p.photos.length) return p.photos;
+  return p.photo ? [p.photo] : [];
 }
 function download(filename, content, mime) {
   const blob = new Blob([content], { type: mime });
@@ -66,6 +78,7 @@ async function guarded(fn) {
     }
   }
 }
+const prefersReducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // -------------------------------------------------------------- router
 
@@ -77,21 +90,112 @@ function currentRoute() {
 window.addEventListener("hashchange", render);
 DB.onChange(render);
 
-const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
+const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["timeline", "Хронология"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
 
-function layout(view, inner) {
-  return `
+function renderShell() {
+  app.innerHTML = `
     <header class="topbar">
       <a href="#/home" class="brand"><span class="brand-seal">СК</span> Скрябины</a>
-      <nav class="topnav">${NAV.map(([k, l]) => `<a href="#/${k}" class="${view === k ? "active" : ""}">${l}</a>`).join("")}</nav>
+      <nav class="topnav">${NAV.map(([k, l]) => `<a href="#/${k}" data-nav="${k}">${l}</a>`).join("")}</nav>
     </header>
-    ${inner}
+    <main id="route-outlet"></main>
     <p class="footer-note">Семейный архив Скрябиных — общие данные для всех, кто заходит на сайт. Не является официальным генеалогическим документом.</p>
   `;
+}
+function updateNavActive(view) {
+  document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === view));
 }
 
 function loadingScreen() {
   return `<div class="loading-screen"><div class="loading-dot"></div><p class="muted">Загружаем семейный архив…</p></div>`;
+}
+
+let lastView = null;
+function setOutlet(html, view, afterInsert) {
+  const outlet = document.getElementById("route-outlet");
+  const viewChanged = view !== lastView;
+  lastView = view;
+  if (!viewChanged || prefersReducedMotion) {
+    outlet.innerHTML = html;
+    if (afterInsert) afterInsert();
+    return;
+  }
+  outlet.classList.add("route-fade-out");
+  setTimeout(() => {
+    outlet.innerHTML = html;
+    outlet.classList.remove("route-fade-out");
+    outlet.classList.add("route-fade-in");
+    if (afterInsert) afterInsert();
+    setTimeout(() => outlet.classList.remove("route-fade-in"), 260);
+  }, 110);
+}
+
+// -------------------------------------------------------------- starfield
+
+function initStarfield() {
+  const canvas = document.getElementById("starfield");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  let w, h, stars;
+  let mouseX = 0.5, mouseY = 0.5;
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    const count = Math.min(160, Math.floor((w * h) / 9000));
+    stars = Array.from({ length: count }, () => ({
+      x: Math.random() * w, y: Math.random() * h,
+      r: Math.random() * 1.4 + 0.3,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.4 + Math.random() * 0.8,
+      depth: Math.random() * 0.6 + 0.2,
+    }));
+  }
+  window.addEventListener("resize", resize);
+  window.addEventListener("mousemove", (e) => { mouseX = e.clientX / window.innerWidth; mouseY = e.clientY / window.innerHeight; });
+  resize();
+
+  if (prefersReducedMotion) {
+    ctx.clearRect(0, 0, w, h);
+    stars.forEach((s) => { ctx.beginPath(); ctx.fillStyle = "rgba(245,244,251,0.5)"; ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill(); });
+    return;
+  }
+
+  let t = 0;
+  function frame() {
+    t += 0.016;
+    ctx.clearRect(0, 0, w, h);
+    const px = (mouseX - 0.5) * 18, py = (mouseY - 0.5) * 18;
+    stars.forEach((s) => {
+      const twinkle = 0.45 + 0.55 * Math.sin(t * s.speed + s.phase);
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(245, 244, 251, ${(0.15 + 0.55 * twinkle).toFixed(2)})`;
+      ctx.arc(s.x + px * s.depth, s.y + py * s.depth, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+// -------------------------------------------------------------- count-up
+
+function animateCountUp(root) {
+  const els = root.querySelectorAll("[data-count]");
+  if (!els.length) return;
+  els.forEach((el) => {
+    const target = Number(el.dataset.count) || 0;
+    if (prefersReducedMotion) { el.textContent = target; return; }
+    const start = performance.now();
+    const dur = 900;
+    function step(now) {
+      const p = Math.min(1, (now - start) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(eased * target);
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  });
 }
 
 // -------------------------------------------------------------- home
@@ -131,12 +235,12 @@ function viewHome() {
           <p class="lede">Скрябины, Замышляевы, Каретниковы, Ванчиковы — род из деревень Никольского уезда и города Костромы. Часть деревень, где они жили, официально больше не существует. Этот сайт — попытка удержать то, что ещё можно удержать.</p>
           <div class="hero-cta">
             <a class="btn btn-primary" href="#/scheme">Смотреть схему рода</a>
-            <a class="btn" href="#/tree">Дерево по поколениям</a>
+            <a class="btn" href="#/timeline">Хронология семьи</a>
           </div>
           <div class="hero-stats">
-            <div class="hero-stat"><strong>${stats.persons}</strong><span>человек в архиве</span></div>
-            <div class="hero-stat"><strong>${stats.generations}</strong><span>поколений</span></div>
-            <div class="hero-stat"><strong>${stats.photos}</strong><span>фотографий добавлено</span></div>
+            <div class="hero-stat"><strong data-count="${stats.persons}">0</strong><span>человек в архиве</span></div>
+            <div class="hero-stat"><strong data-count="${stats.generations}">0</strong><span>поколений</span></div>
+            <div class="hero-stat"><strong data-count="${stats.photos}">0</strong><span>фотографий добавлено</span></div>
           </div>
         </div>
         <div class="constellation-wrap">${constellationHeroSVG()}</div>
@@ -230,7 +334,10 @@ function viewTree() {
     <div class="page">
       <div class="page-head">
         <div><span class="eyebrow">Родословная</span><h1>Дерево рода</h1></div>
-        ${DB.hasSession() ? `<a class="btn btn-primary" href="#/admin">+ Добавить человека</a>` : ""}
+        <div style="display:flex;gap:8px">
+          <button class="btn" data-action="print-page">Печать</button>
+          ${DB.hasSession() ? `<a class="btn btn-primary" href="#/admin">+ Добавить человека</a>` : ""}
+        </div>
       </div>
       ${gens.map((g) => {
         const people = byGen.get(g).sort((a, b) => (birthYear(a) || 9999) - (birthYear(b) || 9999));
@@ -242,7 +349,8 @@ function viewTree() {
 
 function personCard(p) {
   const branch = branchClass(p);
-  const photo = p.photo ? `<img class="person-photo" src="${p.photo}" alt="">` : `<div class="person-photo-placeholder avatar-${branch}">${esc((p.firstName || "?")[0])}</div>`;
+  const photos = personPhotos(p);
+  const photo = photos.length ? `<img class="person-photo" src="${photos[0]}" alt="">` : `<div class="person-photo-placeholder avatar-${branch}">${esc((p.firstName || "?")[0])}</div>`;
   return `
     <a class="person-card branch-${branch}" href="#/person/${p.id}">
       ${p.isLiving ? `<span class="living-dot" title="жив(а)"></span>` : ""}
@@ -284,11 +392,25 @@ function viewPeople() {
 
 // -------------------------------------------------------------- person detail
 
+function relationChain(id) {
+  const db = DB.get();
+  const chain = relationPathToMarina(id, db.persons, db.relationships, db.marinaId);
+  if (!chain || chain.length < 2) return "";
+  const parts = chain.map((pid, i) => {
+    const person = DB.getPerson(pid);
+    const isLast = i === chain.length - 1;
+    const label = pid === db.marinaId ? "Марина" : fullName(person);
+    return isLast ? `<span class="current">${esc(label)}</span>` : `<a href="#/person/${pid}">${esc(label)}</a>`;
+  });
+  return `<nav class="relation-path" aria-label="Цепочка родства">${parts.join('<span class="sep">→</span>')}</nav>`;
+}
+
 function viewPerson(id) {
   const p = DB.getPerson(id);
   if (!p) return `<div class="page">${emptyState("Человек не найден", "Возможно, запись была удалена.")}</div>`;
   const parents = DB.parentsOf(id), spouses = DB.spousesOf(id), children = DB.childrenOf(id), siblings = DB.siblingsOf(id);
   const branch = branchClass(p);
+  const photos = personPhotos(p);
 
   const relGroup = (title, arr, relType) => arr.length ? `
     <div class="rel-group"><h4>${title}</h4><ul class="rel-list">
@@ -301,8 +423,9 @@ function viewPerson(id) {
   return `
     <div class="page">
       <p style="margin-top:26px"><a href="#/people">← Все люди</a></p>
+      ${relationChain(id)}
       <div class="person-hero">
-        ${p.photo ? `<img class="person-hero-photo" src="${p.photo}" alt="">` : `<div class="person-hero-photo-placeholder avatar-${branch}">${esc((p.firstName || "?")[0])}</div>`}
+        ${photos.length ? `<img class="person-hero-photo" src="${photos[0]}" alt="" data-action="open-lightbox" data-photos='${esc(JSON.stringify(photos))}' data-index="0" style="cursor:zoom-in">` : `<div class="person-hero-photo-placeholder avatar-${branch}">${esc((p.firstName || "?")[0])}</div>`}
         <div>
           <span class="relation-badge">${esc(p._meta.relationToMarina)}</span>
           <h1>${esc(fullName(p))}</h1>
@@ -310,6 +433,8 @@ function viewPerson(id) {
           ${DB.hasSession() ? `<div style="display:flex;gap:8px;margin-top:16px"><button class="btn btn-small" data-action="edit-person" data-id="${p.id}">Редактировать</button><button class="btn btn-small" data-action="quick-add-open" data-id="${p.id}">+ Родственник</button></div>` : ""}
         </div>
       </div>
+
+      ${photos.length > 1 ? `<div class="person-gallery">${photos.map((src, i) => `<img src="${src}" data-action="open-lightbox" data-photos='${esc(JSON.stringify(photos))}' data-index="${i}" alt="">`).join("")}</div>` : ""}
 
       <div class="info-grid">
         ${p.occupation ? infoItem("Род занятий", p.occupation) : ""}
@@ -338,16 +463,58 @@ function infoItem(label, value) {
   return `<div class="info-item"><div class="info-label">${esc(label)}</div><div class="info-value">${esc(value)}</div></div>`;
 }
 
-// -------------------------------------------------------------- scheme (orbital diagram)
+// -------------------------------------------------------------- lightbox
 
-function viewScheme() {
-  const db = DB.get();
-  if (db.persons.length === 0) return `<div class="page">${emptyState("Пока пусто", "Добавьте людей через админку.")}</div>`;
-  const rootId = window.__schemeRoot || db.marinaId;
-  const root = DB.getPerson(rootId) || db.persons[0];
+function openLightbox(photos, index) {
+  window.__lightbox = { photos, index };
+  renderLightbox();
+}
+function closeLightbox() {
+  window.__lightbox = null;
+  const el = document.getElementById("lightbox");
+  el.hidden = true;
+  el.innerHTML = "";
+}
+function renderLightbox() {
+  const state = window.__lightbox;
+  const el = document.getElementById("lightbox");
+  if (!state) { el.hidden = true; return; }
+  el.hidden = false;
+  const { photos, index } = state;
+  el.innerHTML = `
+    <button class="lightbox-close" data-action="lightbox-close" aria-label="Закрыть">✕</button>
+    ${photos.length > 1 ? `<button class="lightbox-nav lightbox-prev" data-action="lightbox-prev" aria-label="Предыдущее фото">‹</button>` : ""}
+    <img class="lightbox-img" src="${photos[index]}" alt="">
+    ${photos.length > 1 ? `<button class="lightbox-nav lightbox-next" data-action="lightbox-next" aria-label="Следующее фото">›</button>` : ""}
+    ${photos.length > 1 ? `<div class="lightbox-counter">${index + 1} / ${photos.length}</div>` : ""}
+  `;
+}
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-action]");
+  if (btn && btn.dataset.action === "open-lightbox") {
+    openLightbox(JSON.parse(btn.dataset.photos), Number(btn.dataset.index));
+    return;
+  }
+  const lb = document.getElementById("lightbox");
+  if (!lb || lb.hidden) return;
+  if (e.target === lb) { closeLightbox(); return; }
+  const action = e.target.closest("[data-action]")?.dataset.action;
+  if (action === "lightbox-close") closeLightbox();
+  if (action === "lightbox-prev") { window.__lightbox.index = (window.__lightbox.index - 1 + window.__lightbox.photos.length) % window.__lightbox.photos.length; renderLightbox(); }
+  if (action === "lightbox-next") { window.__lightbox.index = (window.__lightbox.index + 1) % window.__lightbox.photos.length; renderLightbox(); }
+});
+document.addEventListener("keydown", (e) => {
+  if (!window.__lightbox) return;
+  if (e.key === "Escape") closeLightbox();
+  if (e.key === "ArrowLeft") { window.__lightbox.index = (window.__lightbox.index - 1 + window.__lightbox.photos.length) % window.__lightbox.photos.length; renderLightbox(); }
+  if (e.key === "ArrowRight") { window.__lightbox.index = (window.__lightbox.index + 1) % window.__lightbox.photos.length; renderLightbox(); }
+});
+
+// -------------------------------------------------------------- scheme (radial diagram, zoom/pan/minimap)
+
+function buildSchemeGeometry(root, db) {
   const offsets = generationOffsetRelativeTo(root.id, db.persons, db.relationships);
-
-  const w = 1200, ringGap = 72;
+  const ringGap = 72;
   const nodesByRing = new Map();
   let maxRing = 0;
   db.persons.forEach((p) => {
@@ -357,14 +524,13 @@ function viewScheme() {
     if (!nodesByRing.has(ring)) nodesByRing.set(ring, []);
     nodesByRing.get(ring).push({ p, offset });
   });
-
-  const h = Math.max(560, (maxRing + 1) * ringGap * 2 + 140);
+  const w = Math.max(900, (maxRing + 1) * ringGap * 2 + 200);
+  const h = w;
   const cx = w / 2, cy = h / 2;
   const positions = new Map();
   positions.set(root.id, { x: cx, y: cy });
-
   nodesByRing.forEach((list, ring) => {
-    if (ring === 0) return; // сам корень уже размещён
+    if (ring === 0) return;
     const ancestors = list.filter((n) => n.offset > 0).sort((a, b) => (birthYear(a.p) || 9999) - (birthYear(b.p) || 9999));
     const sameGen = list.filter((n) => n.offset === 0);
     const descendants = list.filter((n) => n.offset < 0);
@@ -377,11 +543,9 @@ function viewScheme() {
         positions.set(n.p.id, { x: cx + r * Math.cos(theta), y: cy + r * Math.sin(theta) });
       });
     };
-    // предки — верхняя дуга, потомки — нижняя, ровесники (кузены) — по бокам
     place(ancestors, 195, 345);
     place(descendants, 15, 165);
     if (sameGen.length) {
-      // ровесники: половина слева, половина справа, вертикально по центру кольца
       const left = sameGen.slice(0, Math.ceil(sameGen.length / 2));
       const right = sameGen.slice(Math.ceil(sameGen.length / 2));
       const placeSide = (arr, baseDeg, spread) => arr.forEach((n, i) => {
@@ -393,22 +557,28 @@ function viewScheme() {
       placeSide(right, 0, 30);
     }
   });
+  return { positions, w, h, cx, cy, maxRing, ringGap, offsets };
+}
+
+function viewScheme() {
+  const db = DB.get();
+  if (db.persons.length === 0) return `<div class="page">${emptyState("Пока пусто", "Добавьте людей через админку.")}</div>`;
+  const rootId = window.__schemeRoot || db.marinaId;
+  const root = DB.getPerson(rootId) || db.persons[0];
+  const geo = buildSchemeGeometry(root, db);
+  const { positions, w, h, cx, cy, maxRing, ringGap, offsets } = geo;
 
   let svg = `<svg class="scheme-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">`;
   for (let r = 1; r <= maxRing; r++) {
     svg += `<circle cx="${cx}" cy="${cy}" r="${r * ringGap}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" />`;
     svg += `<text class="scheme-ring-label" x="${cx + r * ringGap + 6}" y="${cy - 4}">${r} шаг${r === 1 ? "" : r < 5 ? "а" : "ов"} родства</text>`;
   }
-
-  // рёбра
   db.relationships.forEach((r) => {
     const a = positions.get(r.a), b = positions.get(r.b);
     if (!a || !b) return;
     if (r.type === "parent") svg += `<line class="scheme-edge-blood" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`;
     if (r.type === "spouse") svg += `<line class="scheme-edge-spouse" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`;
   });
-
-  // узлы
   db.persons.forEach((p) => {
     const pos = positions.get(p.id);
     if (!pos) return;
@@ -424,16 +594,15 @@ function viewScheme() {
   });
   svg += `</svg>`;
 
-  const db2 = db;
   return `
     <div class="page">
       <div class="page-head"><div><span class="eyebrow">Наглядная схема</span><h1>Схема родства</h1>
-      <p class="lede">Расстояние до центра — степень родства (шагов по дереву до общего предка и обратно). Предки — сверху, потомки — снизу, ровесники по поколению (братья, кузены) — по бокам. Нажмите на точку, чтобы открыть карточку.</p></div></div>
+      <p class="lede">Расстояние до центра — степень родства. Предки — сверху, потомки — снизу, ровесники (братья, кузены) — по бокам. Колесо мыши или щипок — масштаб, перетаскивание — перемещение.</p></div></div>
 
       <div class="scheme-toolbar">
         <label style="display:flex;align-items:center;gap:8px;font-size:0.88rem;color:var(--ink-soft)">Центр схемы:
           <select class="input" data-action="scheme-root-select" style="width:auto">
-            ${db2.persons.filter((p) => offsets.has(p.id) || p.id === root.id).sort((a, b) => fullName(a).localeCompare(fullName(b), "ru")).map((p) => `<option value="${p.id}" ${p.id === root.id ? "selected" : ""}>${esc(fullName(p))}</option>`).join("")}
+            ${db.persons.filter((p) => offsets.has(p.id) || p.id === root.id).sort((a, b) => fullName(a).localeCompare(fullName(b), "ru")).map((p) => `<option value="${p.id}" ${p.id === root.id ? "selected" : ""}>${esc(fullName(p))}</option>`).join("")}
           </select>
         </label>
       </div>
@@ -444,7 +613,156 @@ function viewScheme() {
         <span>— сплошная линия: кровное родство</span>
         <span>┄ пунктир: брак</span>
       </div>
-      <div class="scheme-canvas-wrap">${svg}</div>
+      <div class="scheme-canvas-wrap" id="scheme-wrap">
+        <div class="scheme-transform-layer" id="scheme-layer">${svg}</div>
+        <svg class="scheme-minimap" id="scheme-minimap" viewBox="0 0 ${w} ${h}"></svg>
+        <div class="scheme-zoom-controls">
+          <button data-action="scheme-zoom-in" aria-label="Приблизить">+</button>
+          <button data-action="scheme-zoom-out" aria-label="Отдалить">−</button>
+          <button data-action="scheme-zoom-reset" aria-label="Сбросить масштаб">⤢</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function initSchemeInteraction() {
+  const wrap = document.getElementById("scheme-wrap");
+  const layer = document.getElementById("scheme-layer");
+  const minimap = document.getElementById("scheme-minimap");
+  if (!wrap || !layer) return;
+  const svgEl = layer.querySelector("svg");
+  const contentW = Number(svgEl.getAttribute("width"));
+  const contentH = Number(svgEl.getAttribute("height"));
+
+  let scale = 1, tx = 0, ty = 0;
+
+  function fitToView() {
+    const rect = wrap.getBoundingClientRect();
+    scale = Math.min(rect.width / contentW, rect.height / contentH) * 0.92;
+    tx = (rect.width - contentW * scale) / 2;
+    ty = (rect.height - contentH * scale) / 2;
+    apply();
+  }
+
+  function apply() {
+    layer.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    updateMinimap();
+  }
+
+  function updateMinimap() {
+    if (!minimap) return;
+    const rect = wrap.getBoundingClientRect();
+    const vx = -tx / scale, vy = -ty / scale, vw = rect.width / scale, vh = rect.height / scale;
+    let dots = "";
+    svgEl.querySelectorAll("circle.node-visible").forEach((c) => {
+      dots += `<circle cx="${c.getAttribute("cx")}" cy="${c.getAttribute("cy")}" r="5" />`;
+    });
+    minimap.innerHTML = `${dots}<rect class="viewport-rect" x="${vx}" y="${vy}" width="${vw}" height="${vh}" />`;
+  }
+
+  wrap.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const prevScale = scale;
+    scale = Math.min(4, Math.max(0.25, scale * (e.deltaY < 0 ? 1.1 : 0.9)));
+    tx = mx - ((mx - tx) / prevScale) * scale;
+    ty = my - ((my - ty) / prevScale) * scale;
+    apply();
+  }, { passive: false });
+
+  let dragging = false, lastX = 0, lastY = 0;
+  wrap.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("[data-action='scheme-node-click']") || e.target.closest(".scheme-zoom-controls") || e.target.closest(".scheme-minimap")) return;
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    wrap.classList.add("grabbing");
+    wrap.setPointerCapture(e.pointerId);
+  });
+  wrap.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    tx += e.clientX - lastX; ty += e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    apply();
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach((ev) => wrap.addEventListener(ev, () => { dragging = false; wrap.classList.remove("grabbing"); }));
+
+  const touches = new Map();
+  wrap.addEventListener("touchstart", (e) => { for (const t of e.changedTouches) touches.set(t.identifier, t); }, { passive: true });
+  wrap.addEventListener("touchmove", (e) => {
+    if (e.touches.length < 2) return;
+    e.preventDefault();
+    const [t1, t2] = e.touches;
+    const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+    if (wrap.__pinchDist) {
+      const factor = dist / wrap.__pinchDist;
+      scale = Math.min(4, Math.max(0.25, scale * factor));
+      apply();
+    }
+    wrap.__pinchDist = dist;
+  }, { passive: false });
+  wrap.addEventListener("touchend", () => { wrap.__pinchDist = null; });
+
+  document.querySelectorAll("[data-action='scheme-zoom-in']").forEach((b) => b.addEventListener("click", () => { scale = Math.min(4, scale * 1.25); apply(); }));
+  document.querySelectorAll("[data-action='scheme-zoom-out']").forEach((b) => b.addEventListener("click", () => { scale = Math.max(0.25, scale * 0.8); apply(); }));
+  document.querySelectorAll("[data-action='scheme-zoom-reset']").forEach((b) => b.addEventListener("click", fitToView));
+
+  fitToView();
+  window.addEventListener("resize", fitToView, { once: false });
+}
+
+// -------------------------------------------------------------- timeline
+
+function viewTimeline() {
+  const db = DB.get();
+  const events = [];
+  db.persons.forEach((p) => {
+    const by = birthYear(p);
+    if (by) events.push({ year: by, type: "birth", p });
+    const dy = deathYear(p);
+    if (dy) events.push({ year: dy, type: "death", p });
+  });
+  if (events.length === 0) return `<div class="page">${emptyState("Пока нет дат", "Добавьте людям даты рождения через админку.")}</div>`;
+  events.sort((a, b) => a.year - b.year);
+  const minYear = Math.floor(events[0].year / 10) * 10;
+  const maxYear = Math.ceil(events[events.length - 1].year / 10) * 10;
+  const pxPerYear = 26;
+  const trackWidth = (maxYear - minYear) * pxPerYear + 160;
+
+  const decades = [];
+  for (let y = minYear; y <= maxYear; y += 10) decades.push(y);
+
+  const xFor = (year) => 80 + (year - minYear) * pxPerYear;
+
+  let html = `<div class="timeline-track" style="width:${trackWidth}px">`;
+  html += `<div class="timeline-line"></div>`;
+  decades.forEach((y) => {
+    html += `<div class="timeline-tick" style="left:${xFor(y)}px"></div><div class="timeline-decade" style="left:${xFor(y)}px">${y}</div>`;
+  });
+  events.forEach((ev, i) => {
+    const branch = branchClass(ev.p);
+    const color = branch === "father" ? "var(--violet)" : branch === "mother" ? "var(--teal)" : branch === "husband" ? "var(--coral)" : "var(--gold)";
+    const side = i % 2 === 0 ? "above" : "below";
+    const verb = ev.type === "birth" ? "родил" + (ev.p.gender === "female" ? "ась" : "ся") : "умер" + (ev.p.gender === "female" ? "ла" : "");
+    html += `<div class="timeline-event ${side}" style="left:${xFor(ev.year)}px" data-action="scheme-node-click" data-id="${ev.p.id}">
+      ${side === "below" ? `<div class="dot" style="background:${color};color:${color}"></div>` : ""}
+      <div class="tcard"><strong>${esc(ev.year)}</strong>${esc(fullName(ev.p))}<br>${verb}</div>
+      ${side === "above" ? `<div class="dot" style="background:${color};color:${color}"></div>` : ""}
+    </div>`;
+  });
+  html += `</div>`;
+
+  return `
+    <div class="page">
+      <div class="page-head"><div><span class="eyebrow">Хронология</span><h1>Семья во времени</h1>
+      <p class="lede">Все известные даты рождения и смерти на одной шкале — от ${minYear} до наших дней. Листайте по горизонтали.</p></div></div>
+      <div class="timeline-legend">
+        <span><span class="legend-dot" style="background:var(--violet)"></span>линия отца</span>
+        <span><span class="legend-dot" style="background:var(--teal)"></span>линия матери</span>
+        <span><span class="legend-dot" style="background:var(--coral)"></span>родня мужа</span>
+        <span><span class="legend-dot" style="background:var(--gold)"></span>родство не установлено</span>
+      </div>
+      <div class="timeline-wrap">${html}</div>
     </div>
   `;
 }
@@ -481,7 +799,12 @@ function readDateField(form, prefix) {
   return out;
 }
 
+function photoThumb(src, i) {
+  return `<div class="photo-thumb"><img src="${src}" alt=""><button type="button" class="photo-remove" data-action="photo-remove" data-index="${i}">✕</button></div>`;
+}
+
 function personFormFields(p = {}) {
+  const photos = personPhotos(p);
   return `
     <div class="form-grid">
       <label>Фамилия <input class="input" name="lastName" value="${esc(p.lastName)}"></label>
@@ -504,16 +827,17 @@ function personFormFields(p = {}) {
     </div>
     <label class="block">Биография <textarea class="input" name="bio" rows="3">${esc(p.bio)}</textarea></label>
     <label class="block">Заметки <textarea class="input" name="notes" rows="2">${esc(p.notes)}</textarea></label>
-    <label class="block">Фотография
-      <input type="file" accept="image/*" data-action="photo-input">
-      <div class="photo-target">${p.photo ? `<img class="photo-preview" src="${p.photo}">` : ""}</div>
+    <label class="block">Фотографии (можно несколько)
+      <input type="file" accept="image/*" multiple data-action="photos-input">
+      <div class="photo-grid" data-photos-target>${photos.map((src, i) => photoThumb(src, i)).join("")}</div>
     </label>
-    <input type="hidden" name="photo" value="${esc(p.photo || "")}">
+    <input type="hidden" name="photos" value='${esc(JSON.stringify(photos))}'>
   `;
 }
 
 function readPersonForm(form) {
   const fd = new FormData(form);
+  const photos = JSON.parse(fd.get("photos") || "[]");
   return {
     lastName: fd.get("lastName")?.trim() || "", firstName: fd.get("firstName")?.trim() || "",
     middleName: fd.get("middleName")?.trim() || "", maidenName: fd.get("maidenName")?.trim() || "",
@@ -521,7 +845,7 @@ function readPersonForm(form) {
     birth: readDateField(form, "birth"), death: readDateField(form, "death"),
     birthPlace: fd.get("birthPlace")?.trim() || "", deathPlace: fd.get("deathPlace")?.trim() || "",
     occupation: fd.get("occupation")?.trim() || "", bio: fd.get("bio")?.trim() || "", notes: fd.get("notes")?.trim() || "",
-    photo: fd.get("photo") || "",
+    photos, photo: photos[0] || "",
   };
 }
 
@@ -648,23 +972,26 @@ function adminBackupTab() {
 // -------------------------------------------------------------- render
 
 function render() {
-  if (!DB.isReady()) { app.innerHTML = loadingScreen(); return; }
+  if (!document.getElementById("route-outlet")) renderShell();
+  if (!DB.isReady()) { setOutlet(loadingScreen(), "__loading"); return; }
   const { view, id } = currentRoute();
-  let inner;
+  let inner, after = null;
   if (view === "tree") inner = viewTree();
-  else if (view === "scheme") inner = viewScheme();
+  else if (view === "scheme") { inner = viewScheme(); after = initSchemeInteraction; }
+  else if (view === "timeline") inner = viewTimeline();
   else if (view === "people") inner = viewPeople();
   else if (view === "person") inner = viewPerson(id);
   else if (view === "origins") inner = viewOrigins();
   else if (view === "geography") inner = viewGeography();
   else if (view === "admin") inner = viewAdmin();
-  else inner = viewHome();
-  app.innerHTML = layout(view, inner);
+  else { inner = viewHome(); after = (root) => animateCountUp(root); }
+  updateNavActive(view);
+  setOutlet(inner, view, () => { if (after) after(document.getElementById("route-outlet")); });
 }
 
 // -------------------------------------------------------------- events
 
-app.addEventListener("click", (e) => {
+document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-action]");
   if (!btn) return;
   const action = btn.dataset.action;
@@ -673,6 +1000,7 @@ app.addEventListener("click", (e) => {
   if (action === "admin-tab") { window.__adminTab = btn.dataset.tab; render(); }
   if (action === "admin-logout") { DB.setPassword(null); render(); }
   if (action === "scheme-node-click") { location.hash = "#/person/" + btn.dataset.id; }
+  if (action === "print-page") window.print();
 
   if (action === "admin-delete-person") {
     if (confirm("Удалить эту запись из архива? Это увидят все посетители сайта.")) guarded(() => DB.deletePerson(btn.dataset.id));
@@ -694,31 +1022,50 @@ app.addEventListener("click", (e) => {
       <form data-form="edit-person" data-id="${p.id}" class="panel"><h4 class="eyebrow">Редактирование</h4>${personFormFields(p)}<button class="btn btn-primary" type="submit">Сохранить</button></form>`;
   }
 
+  if (action === "photo-remove") {
+    const form = btn.closest("form");
+    const hidden = form.querySelector("input[name='photos']");
+    const arr = JSON.parse(hidden.value || "[]");
+    arr.splice(Number(btn.dataset.index), 1);
+    hidden.value = JSON.stringify(arr);
+    form.querySelector("[data-photos-target]").innerHTML = arr.map((src, i) => photoThumb(src, i)).join("");
+  }
+
   if (action === "export-backup") download("skryabin-family-backup.json", DB.exportJSON(), "application/json");
   if (action === "reset-overlay") {
     if (confirm("Все правки будут удалены для всех посетителей, останутся только исходные данные. Продолжить?")) guarded(() => DB.resetOverlay());
   }
 });
 
-app.addEventListener("change", (e) => {
+document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.matches("[data-action='scheme-root-select']")) { window.__schemeRoot = el.value; render(); }
   if (el.name && el.name.endsWith("_mode")) {
     const fs = el.closest("[data-datefield]");
     fs.querySelectorAll(".date-inputs").forEach((s) => { s.style.display = s.dataset.mode === el.value ? "inline-flex" : "none"; });
   }
-  if (el.matches("[data-action='photo-input']")) {
-    const file = el.files[0];
-    if (!file) return;
-    resizeImageFile(file, 480, (dataUrl) => {
-      const form = el.closest("form");
-      form.querySelector("input[name='photo']").value = dataUrl;
-      form.querySelector(".photo-target").innerHTML = `<img class="photo-preview" src="${dataUrl}">`;
+  if (el.matches("[data-action='photos-input']")) {
+    const files = Array.from(el.files || []);
+    if (!files.length) return;
+    const form = el.closest("form");
+    const hidden = form.querySelector("input[name='photos']");
+    let pending = files.length;
+    const results = [];
+    files.forEach((file, idx) => {
+      resizeImageFile(file, 900, (dataUrl) => {
+        results[idx] = dataUrl;
+        pending--;
+        if (pending === 0) {
+          const arr = JSON.parse(hidden.value || "[]").concat(results);
+          hidden.value = JSON.stringify(arr);
+          form.querySelector("[data-photos-target]").innerHTML = arr.map((src, i) => photoThumb(src, i)).join("");
+        }
+      });
     });
   }
 });
 
-app.addEventListener("input", (e) => {
+document.addEventListener("input", (e) => {
   if (e.target.matches("[data-action='people-search']")) {
     window.__peopleQ = e.target.value;
     render();
@@ -727,7 +1074,7 @@ app.addEventListener("input", (e) => {
   }
 });
 
-app.addEventListener("submit", (e) => {
+document.addEventListener("submit", (e) => {
   const form = e.target;
   if (!form.matches("[data-form]")) return;
   e.preventDefault();
@@ -775,5 +1122,7 @@ app.addEventListener("submit", (e) => {
 
 // -------------------------------------------------------------------- boot
 
+renderShell();
+initStarfield();
 render();
 DB.ready().then(render);
