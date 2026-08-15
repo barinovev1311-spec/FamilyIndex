@@ -15,7 +15,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const researchService = require("./research-service");
-const { isConfigured: aiConfigured } = require("./ai-service");
+const { isConfigured: aiConfigured, testConnection: aiTestConnection } = require("./ai-service");
 
 const ROOT = __dirname;
 const PORT = process.env.PORT || 3000;
@@ -31,7 +31,7 @@ const MIME = {
 };
 
 function emptyOverlay() {
-  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [] };
+  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [], surnameVerifications: {} };
 }
 
 function ensureOverlay() {
@@ -214,6 +214,20 @@ const server = http.createServer((req, res) => {
     });
   }
 
+  // ---------------------------------------------------------------- подтверждение сведений о фамилии
+  const surnameMatch = p.match(/^\/api\/surname\/([^/]+)\/verify$/);
+  if (surnameMatch && req.method === "PUT") {
+    return readBody(req, (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      const overlay = readOverlay();
+      const key = decodeURIComponent(surnameMatch[1]);
+      if (body.verified) overlay.surnameVerifications[key] = { verifiedAt: new Date().toISOString() };
+      else delete overlay.surnameVerifications[key];
+      writeOverlay(overlay);
+      sendJSON(res, 200, { overlay });
+    });
+  }
+
   // ---------------------------------------------------------------- заметки
   if (p === "/api/note" && req.method === "POST") {
     return readBody(req, (err, body) => {
@@ -330,6 +344,16 @@ const server = http.createServer((req, res) => {
         if (!person) return sendJSON(res, 404, { error: "person_not_found" });
         const result = await researchService.generateDossier(person, relativesOf(state, person.id), body.style || "factual");
         sendJSON(res, 200, result);
+      } catch (e) { sendAiError(res, e); }
+    });
+  }
+
+  if (p === "/api/ai/test" && req.method === "POST") {
+    return readBody(req, async (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      try {
+        const text = await aiTestConnection();
+        sendJSON(res, 200, { ok: true, reply: text });
       } catch (e) { sendAiError(res, e); }
     });
   }

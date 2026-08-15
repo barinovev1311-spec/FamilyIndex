@@ -2,6 +2,7 @@ import { guessSurnameOrigin, sideLabelForOrigin, stripGenderSuffix } from "./sur
 import { DB } from "./db.js";
 import { generationOffsetRelativeTo, relationPathToMarina } from "./relations.js";
 import { computeGaps, GAP_LABELS, STATUS_LABELS, gapStatusColor, computeTreeStats } from "./gaps.js";
+import { computeRelationshipSuggestions } from "./relationship-suggestions.js";
 
 const app = document.getElementById("app");
 
@@ -315,10 +316,12 @@ function featuredPersonBlock() {
         <h3>${esc(fullName(p))}</h3>
         <p class="muted-small">${esc(shortDates(p))} · ${esc(p._meta.relationToMarina)}</p>
         ${p.bio ? `<p class="muted-small">${esc(p.bio.slice(0, 220))}${p.bio.length > 220 ? "…" : ""}</p>` : ""}
-        <div style="display:flex;gap:8px;margin-top:10px">
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
           <a class="btn btn-small" href="#/person/${p.id}">Открыть карточку</a>
           <a class="btn btn-small" href="#/scheme" data-action="show-in-tree" data-id="${p.id}">Показать в дереве</a>
+          ${DB.hasSession() ? `<button class="btn btn-small" data-action="ai-featured-insight" data-id="${p.id}">🤖 Узнать больше</button>` : ""}
         </div>
+        <div id="featured-insight-slot"></div>
       </div>
     </div>`;
 }
@@ -379,17 +382,22 @@ function viewHome() {
 
 function originCard(o) {
   const cls = o.side.includes("отца") ? "side-father" : o.side.includes("матери") ? "side-mother" : "side-other";
-  const slotId = `surname-ai-${stripGenderSuffix(o.surname).toLowerCase().replace(/[^a-zа-я]/gi, "")}`;
-  const members = DB.get().persons.filter((p) => stripGenderSuffix(p.lastName).toLowerCase() === stripGenderSuffix(o.surname).toLowerCase())
+  const key = stripGenderSuffix(o.surname).toLowerCase();
+  const slotId = `surname-ai-${key.replace(/[^a-zа-я]/gi, "")}`;
+  const members = DB.get().persons.filter((p) => stripGenderSuffix(p.lastName).toLowerCase() === key)
     .sort((a, b) => (birthYear(a) || 9999) - (birthYear(b) || 9999));
+  const verified = DB.isSurnameVerified(key);
   return `
     <div class="origin-card ${cls}">
-      <div class="side-tag">${esc(o.side)}</div>
+      <div class="side-tag">${esc(o.side)} ${verified ? `<span class="verified-tag">✓ подтверждено Мариной</span>` : ""}</div>
       <div class="surname">${esc(o.surname)}</div>
       <p>${esc(o.origin)}</p>
       ${o.note ? `<p class="muted" style="font-size:0.85rem">${esc(o.note)}</p>` : ""}
-      ${o.auto ? `<span class="uncertain-tag auto-tag">⚙ автоматически по общим правилам, не проверено</span>` : o.uncertain ? `<span class="uncertain-tag">версия не окончательная</span>` : ""}
-      ${DB.hasSession() ? `<div style="margin-top:10px"><button class="btn btn-small" data-action="ai-surname" data-surname="${esc(o.surname)}" data-slot="${slotId}">🤖 Уточнить через ИИ</button></div>` : ""}
+      ${!verified && (o.auto || o.uncertain) ? (o.auto ? `<span class="uncertain-tag auto-tag">⚙ автоматически по общим правилам, не проверено</span>` : `<span class="uncertain-tag">версия не окончательная</span>`) : ""}
+      ${DB.hasSession() ? `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-small" data-action="ai-surname" data-surname="${esc(o.surname)}" data-slot="${slotId}">🤖 Уточнить через ИИ</button>
+        <button class="btn btn-small ${verified ? "btn-danger" : "btn-primary"}" data-action="toggle-surname-verified" data-key="${esc(key)}" data-verified="${verified ? "0" : "1"}">${verified ? "Снять подтверждение" : "✓ Подтвердить информацию"}</button>
+      </div>` : ""}
       <div id="${slotId}"></div>
       ${members.length ? `<details class="surname-members"><summary>В дереве: ${members.length} ${ruPlural(members.length, ["человек", "человека", "человек"])}</summary>
         <ul class="note-list" style="margin-top:8px">${members.map((m) => `<li style="padding:6px 0"><a href="#/person/${m.id}">${esc(fullName(m))}</a> <span class="muted-small">${esc(shortDates(m))}</span></li>`).join("")}</ul>
@@ -561,27 +569,53 @@ function placeStatusOf(name) {
 function geographyMapSVG() {
   const { list, migrations } = collectPlaceData();
   if (list.length === 0) return `<p class="muted">Пока нет мест — заполните «Место рождения» у людей в архиве.</p>`;
-  const w = 900, h = 620;
+  const w = 960, h = 660;
   const positions = layoutPlaces(list, w, h);
   const maxCount = list[0].people.length;
 
   let svg = `<svg class="geo-map" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Карта мест рода, по количеству связанных людей">`;
 
+  // -------- декоративная подложка «под карту»: рамка, реки, рельеф, компас
+  svg += `<rect class="geo-frame" x="8" y="8" width="${w - 16}" height="${h - 16}" rx="10" />`;
+  svg += `<rect class="geo-frame-inner" x="18" y="18" width="${w - 36}" height="${h - 36}" rx="6" />`;
+  // контурные "рельефные" линии — просто декоративная текстура местности
+  for (let i = 0; i < 5; i++) {
+    const yOff = 90 + i * 110;
+    svg += `<path class="geo-contour" d="M -20 ${yOff} Q ${w * 0.25} ${yOff - 40 - i * 6}, ${w * 0.5} ${yOff} T ${w + 20} ${yOff}" />`;
+  }
+  // декоративные реки — несколько плавных кривых через всё полотно
+  svg += `<path class="geo-river" d="M -10 ${h * 0.15} C ${w * 0.2} ${h * 0.3}, ${w * 0.35} ${h * 0.1}, ${w * 0.55} ${h * 0.35} S ${w * 0.85} ${h * 0.55}, ${w + 10} ${h * 0.45}" />`;
+  svg += `<path class="geo-river geo-river-thin" d="M ${w * 0.1} -10 C ${w * 0.25} ${h * 0.25}, ${w * 0.15} ${h * 0.5}, ${w * 0.4} ${h * 0.7} S ${w * 0.6} ${h + 10}, ${w * 0.6} ${h + 10}" />`;
+  // компас в углу
+  const cx0 = w - 62, cy0 = 62;
+  svg += `<g class="geo-compass">
+    <circle cx="${cx0}" cy="${cy0}" r="30" />
+    <line x1="${cx0}" y1="${cy0 - 24}" x2="${cx0}" y2="${cy0 + 24}" />
+    <line x1="${cx0 - 24}" y1="${cy0}" x2="${cx0 + 24}" y2="${cy0}" />
+    <text x="${cx0}" y="${cy0 - 30}" text-anchor="middle">С</text>
+    <text x="${cx0}" y="${cy0 + 40}" text-anchor="middle">Ю</text>
+    <text x="${cx0 - 34}" y="${cy0 + 4}" text-anchor="middle">З</text>
+    <text x="${cx0 + 34}" y="${cy0 + 4}" text-anchor="middle">В</text>
+  </g>`;
+
   migrations.forEach((m) => {
     const a = positions.get(m.from), b = positions.get(m.to);
     if (!a || !b) return;
-    svg += `<line class="geo-migration" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`;
+    const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.15, my = (a.y + b.y) / 2 - (b.x - a.x) * 0.15;
+    svg += `<path class="geo-migration" d="M ${a.x} ${a.y} Q ${mx} ${my}, ${b.x} ${b.y}" />`;
   });
 
   list.forEach((place, i) => {
     const pos = positions.get(place.name);
-    const r = 5 + Math.sqrt(place.people.length / maxCount) * 22;
+    const r = 6 + Math.sqrt(place.people.length / maxCount) * 20;
     const status = placeStatusOf(place.name);
     const showLabel = i < 14 || place.people.length >= 2;
     const delay = (Math.min(i, 20) * 0.05).toFixed(2);
     svg += `<g class="geo-node twinkle status-${status}" style="animation-delay:${delay}s" data-action="geo-select-place" data-place="${esc(place.name)}">
+      <circle class="geo-halo" cx="${pos.x}" cy="${pos.y}" r="${r + 10}" />
+      <circle class="geo-ring" cx="${pos.x}" cy="${pos.y}" r="${r + 4}" />
       <circle class="geo-dot" cx="${pos.x}" cy="${pos.y}" r="${r}" />
-      ${showLabel ? `<text class="geo-label" x="${pos.x}" y="${pos.y - r - 6}" text-anchor="middle">${esc(place.name.length > 28 ? place.name.slice(0, 26) + "…" : place.name)}</text>` : ""}
+      ${showLabel ? `<text class="geo-label" x="${pos.x}" y="${pos.y - r - 14}" text-anchor="middle">${esc(place.name.length > 28 ? place.name.slice(0, 26) + "…" : place.name)}</text>` : ""}
       <text class="geo-count" x="${pos.x}" y="${pos.y + 4}" text-anchor="middle">${place.people.length}</text>
     </g>`;
   });
@@ -1208,34 +1242,74 @@ function viewTimeline() {
     minYear = Math.min(minYear, Math.floor(historyInRange[0].year / 10) * 10);
   }
 
-  const pxPerYear = 26;
+  const pxPerYear = 42;
   const trackWidth = (maxYear - minYear) * pxPerYear + 160;
-  const trackHeight = showHistory && historyInRange.length ? 330 : 320;
+  const xFor = (year) => 80 + (year - minYear) * pxPerYear;
   const decades = [];
   for (let y = minYear; y <= maxYear; y += 10) decades.push(y);
-  const xFor = (year) => 80 + (year - minYear) * pxPerYear;
+
+  // многоэтажная раскладка: каждое событие ищет первый свободный «этаж»
+  // на своей стороне (сверху/снизу), где не налезет на соседа —
+  // вместо прежнего жёсткого чередования через одного
+  const minGap = 118;
+  const rowGap = 74;
+  const aboveRows = [], belowRows = [];
+  const placed = events.map((ev, i) => {
+    const x = xFor(ev.year);
+    const side = i % 2 === 0 ? "above" : "below";
+    const rows = side === "above" ? aboveRows : belowRows;
+    let rowIndex = rows.findIndex((lastX) => x - lastX >= minGap);
+    if (rowIndex === -1) { rowIndex = rows.length; rows.push(x); } else rows[rowIndex] = x;
+    return { ...ev, side, rowIndex, x };
+  });
+  const maxAboveRows = aboveRows.length, maxBelowRows = belowRows.length;
+  const baseOffset = 172;
+  const centerY = 40 + maxAboveRows * rowGap;
+
+  // многоэтажная раскладка исторического ряда — та же логика, посчитана
+  // заранее, чтобы знать итоговую высоту всего блока
+  let historyPlaced = [], historyRowsCount = 0;
+  if (showHistory && historyInRange.length) {
+    const historyMinGap = 108;
+    const historyRows = [];
+    historyPlaced = historyInRange.map((h) => {
+      const x = xFor(h.year);
+      let rowIndex = historyRows.findIndex((lastX) => x - lastX >= historyMinGap);
+      if (rowIndex === -1) { rowIndex = historyRows.length; historyRows.push(x); } else historyRows[rowIndex] = x;
+      return { ...h, rowIndex };
+    });
+    historyRowsCount = historyRows.length;
+  }
+  const historyRowGap = 56;
+  const historyLaneHeight = historyPlaced.length ? 20 + historyRowsCount * historyRowGap + 20 : 0;
+  const trackHeight = centerY + maxBelowRows * rowGap + 90 + (historyLaneHeight ? historyLaneHeight + 20 : 0);
 
   let html = `<div class="timeline-track" style="width:${trackWidth}px;height:${trackHeight}px">`;
-  html += `<div class="timeline-line"></div>`;
+  html += `<div class="timeline-line" style="top:${centerY}px"></div>`;
   decades.forEach((y) => {
-    html += `<div class="timeline-tick" style="left:${xFor(y)}px"></div><div class="timeline-decade" style="left:${xFor(y)}px">${y}</div>`;
+    html += `<div class="timeline-tick" style="left:${xFor(y)}px;top:${centerY - 5}px"></div><div class="timeline-decade" style="left:${xFor(y)}px;top:${centerY + 8}px">${y}</div>`;
   });
-  events.forEach((ev, i) => {
+  placed.forEach((ev) => {
     const branch = branchClass(ev.p);
     const color = branch === "father" ? "var(--violet)" : branch === "mother" ? "var(--teal)" : branch === "husband" ? "var(--coral)" : "var(--gold)";
-    const side = i % 2 === 0 ? "above" : "below";
-    const verb = ev.type === "birth" ? "родил" + (ev.p.gender === "female" ? "ась" : "ся") : "умер" + (ev.p.gender === "female" ? "ла" : "");
-    html += `<div class="timeline-event ${side}" style="left:${xFor(ev.year)}px" data-action="scheme-node-click" data-id="${ev.p.id}">
-      ${side === "below" ? `<div class="dot" style="background:${color};color:${color}"></div>` : ""}
-      <div class="tcard"><strong>${esc(ev.year)}</strong>${esc(fullName(ev.p))}<br>${verb}</div>
-      ${side === "above" ? `<div class="dot" style="background:${color};color:${color}"></div>` : ""}
+    const shortName = `${ev.p.lastName} ${(ev.p.firstName || "")[0] || ""}.${(ev.p.middleName || "")[0] || ""}`.trim();
+    const icon = ev.type === "birth" ? "◇" : "✕";
+    const y = ev.side === "above" ? centerY - 12 - ev.rowIndex * rowGap : centerY + 12 + ev.rowIndex * rowGap;
+    const cardTop = ev.side === "above" ? "auto" : `${y}px`;
+    const cardBottom = ev.side === "above" ? `${trackHeight - y}px` : "auto";
+    html += `<div class="timeline-event" style="left:${xFor(ev.year)}px;top:${cardTop};bottom:${cardBottom}" data-action="scheme-node-click" data-id="${ev.p.id}" title="${esc(fullName(ev.p))} — ${ev.type === "birth" ? "родился/родилась" : "умер(ла)"} в ${ev.year}">
+      ${ev.side === "below" ? `<div class="dot" style="background:${color};color:${color}"></div>` : ""}
+      <div class="tcard"><strong>${icon} ${esc(ev.year)}</strong>${esc(shortName)}</div>
+      ${ev.side === "above" ? `<div class="dot" style="background:${color};color:${color}"></div>` : ""}
     </div>`;
   });
 
-  if (showHistory && historyInRange.length) {
-    html += `<div class="history-lane">`;
-    historyInRange.forEach((h) => {
-      html += `<div class="history-event scope-${h.scope}" style="left:${xFor(h.year)}px" title="${esc(h.title)}">
+  let historyLaneHeightUnused = 65;
+  if (showHistory && historyPlaced.length) {
+    const historyTop = centerY + maxBelowRows * rowGap + 40;
+    html += `<div class="history-lane" style="top:${historyTop}px;height:${historyLaneHeight}px">`;
+    historyPlaced.forEach((h) => {
+      html += `<div class="history-event scope-${h.scope}" style="left:${xFor(h.year)}px;top:${8 + h.rowIndex * historyRowGap}px" title="${esc(h.title)}">
         <span class="history-icon">${h.icon}</span>
         <div class="history-card"><strong>${h.year}</strong>${esc(h.title)}</div>
       </div>`;
@@ -1542,10 +1616,12 @@ function viewAdmin() {
         <button class="tab-btn ${tab === "people" ? "active" : ""}" data-action="admin-tab" data-tab="people">Люди</button>
         <button class="tab-btn ${tab === "add" ? "active" : ""}" data-action="admin-tab" data-tab="add">+ Новый человек</button>
         <button class="tab-btn ${tab === "backup" ? "active" : ""}" data-action="admin-tab" data-tab="backup">Резервная копия</button>
+        <button class="tab-btn ${tab === "ai" ? "active" : ""}" data-action="admin-tab" data-tab="ai">🤖 ИИ</button>
       </div>
       ${tab === "people" ? adminPeopleTab(db) : ""}
       ${tab === "add" ? adminAddTab() : ""}
       ${tab === "backup" ? adminBackupTab() : ""}
+      ${tab === "ai" ? adminAiTab() : ""}
     </div>
   `;
 }
@@ -1598,6 +1674,36 @@ function adminAddTab() {
   return `
     <form data-form="new-person" class="panel">${personFormFields({})}<button class="btn btn-primary" type="submit">Создать человека</button></form>
     <p class="muted">После создания откройте карточку нового человека и кнопкой «+ Родственник» свяжите его с семьёй — иначе он останется без родства и не попадёт в дерево и схему.</p>
+  `;
+}
+
+function adminAiTab() {
+  const suggestions = computeRelationshipSuggestions(DB);
+  return `
+    <div class="panel">
+      <h3>Проверка подключения ИИ</h3>
+      <p class="muted">Быстрый тест: если кнопка ниже не отвечает «работает», значит либо не задан <code>DEEPSEEK_API_KEY</code> на сервере, либо сам DeepSeek сейчас недоступен — точный текст ошибки появится тут же.</p>
+      <button class="btn btn-primary" data-action="ai-test-connection">Проверить подключение</button>
+      <div id="ai-test-result" style="margin-top:10px"></div>
+    </div>
+
+    <div class="panel">
+      <h3>🤖 Подсказки по связям</h3>
+      <p class="muted">Автоматически найдено по отчеству (без ИИ — надёжная лингвистика: отчество почти всегда образовано от имени отца). Проверьте и подтвердите — или отклоните, если совпадение случайное.</p>
+      ${suggestions.length === 0 ? `<p class="muted-small">Пока подсказок нет.</p>` : `
+        <ul class="note-list">
+          ${suggestions.map((s, i) => `
+            <li style="padding:10px 0" data-suggestion-row="${i}">
+              <strong><a href="#/person/${s.candidateId}">${esc(s.candidateName)}</a></strong> — вероятно, отец
+              <strong><a href="#/person/${s.childId}">${esc(s.childName)}</a></strong>
+              <div class="muted-small">${esc(s.reason)}</div>
+              <div style="margin-top:6px;display:flex;gap:8px">
+                <button class="btn btn-small btn-primary" data-action="confirm-suggestion" data-child="${s.childId}" data-candidate="${s.candidateId}">Подтвердить связь</button>
+                <button class="btn btn-small" data-action="dismiss-suggestion" data-row="${i}">Отклонить</button>
+              </div>
+            </li>`).join("")}
+        </ul>`}
+    </div>
   `;
 }
 
@@ -1685,6 +1791,41 @@ document.addEventListener("click", (e) => {
   }
 
   // ------------------------------------------------------ точки расследования
+  if (action === "toggle-surname-verified") {
+    guarded(() => DB.setSurnameVerified(btn.dataset.key, btn.dataset.verified === "1"));
+  }
+
+  if (action === "ai-featured-insight") {
+    const personId = btn.dataset.id;
+    const slot = document.getElementById("featured-insight-slot");
+    btn.disabled = true; btn.textContent = "Спрашиваем ИИ…";
+    DB.aiDossier(personId, "narrative").then((d) => {
+      slot.innerHTML = `<p class="muted-small" style="margin-top:10px;white-space:pre-line">🤖 ${esc(d.narrative || d.known || "")}</p>`;
+    }).catch((err) => { slot.innerHTML = `<div style="margin-top:10px">${aiErrorBox(err)}</div>`; })
+      .finally(() => { btn.disabled = false; btn.textContent = "🤖 Узнать больше"; });
+  }
+
+  if (action === "ai-test-connection") {
+    const slot = document.getElementById("ai-test-result");
+    btn.disabled = true; btn.textContent = "Проверяем…";
+    DB.aiTest().then((r) => {
+      slot.innerHTML = `<p style="color:var(--teal)">✓ Подключение работает. Ответ модели: «${esc(r.reply)}»</p>`;
+    }).catch((err) => {
+      slot.innerHTML = `<p style="color:var(--coral)">✗ ${esc(err.message)}</p>`;
+    }).finally(() => { btn.disabled = false; btn.textContent = "Проверить подключение"; });
+  }
+
+  if (action === "confirm-suggestion") {
+    guarded(async () => {
+      await DB.addRelationship(btn.dataset.candidate, btn.dataset.child, "parent");
+      toast("Связь добавлена.");
+    });
+  }
+  if (action === "dismiss-suggestion") {
+    const row = document.querySelector(`[data-suggestion-row="${btn.dataset.row}"]`);
+    if (row) row.remove();
+  }
+
   if (action === "toggle-gaps") { window.__showGaps = !window.__showGaps; render(); }
 
   if (action === "geo-select-place") {

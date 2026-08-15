@@ -363,21 +363,18 @@ textarea.input { resize: vertical; }
 /* ------------------------------------------------------------ timeline */
 
 .timeline-wrap { overflow-x: auto; padding: 40px 0 70px; }
-.timeline-track { position: relative; height: 320px; }
-.timeline-line { position: absolute; top: 160px; left: 0; right: 0; height: 2px; background: var(--line-bright); }
-.timeline-decade { position: absolute; top: 168px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-faint); transform: translateX(-50%); }
-.timeline-tick { position: absolute; top: 155px; width: 1px; height: 12px; background: var(--line-bright); }
+.timeline-track { position: relative; }
+.timeline-line { position: absolute; left: 0; right: 0; height: 2px; background: var(--line-bright); }
+.timeline-decade { position: absolute; font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-faint); transform: translateX(-50%); }
+.timeline-tick { position: absolute; width: 1px; height: 12px; background: var(--line-bright); }
 .timeline-event {
   position: absolute; display: flex; flex-direction: column; align-items: center; gap: 4px;
-  transform: translateX(-50%); width: 120px; cursor: pointer;
+  transform: translateX(-50%); width: 118px; cursor: pointer;
 }
 .timeline-event .dot { width: 10px; height: 10px; border-radius: 50%; filter: drop-shadow(0 0 6px currentColor); }
-.timeline-event .tcard { font-size: 0.72rem; text-align: center; color: var(--ink-soft); line-height: 1.3; }
-.timeline-event .tcard strong { display: block; color: var(--ink); font-family: var(--font-display); font-size: 0.82rem; }
-.timeline-event.above { bottom: 172px; }
-.timeline-event.above::after { content: ""; position: absolute; bottom: -12px; left: 50%; width: 1px; height: 12px; background: var(--line-bright); }
-.timeline-event.below { top: 172px; }
-.timeline-event.below::after { content: ""; position: absolute; top: -12px; left: 50%; width: 1px; height: 12px; background: var(--line-bright); }
+.timeline-event .tcard { font-size: 0.72rem; text-align: center; color: var(--ink-soft); line-height: 1.3; background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 5px 8px; white-space: nowrap; }
+.timeline-event .tcard strong { display: block; color: var(--ink); font-family: var(--font-display); font-size: 0.82rem; white-space: nowrap; }
+.timeline-event:hover .tcard { border-color: var(--line-bright); }
 .timeline-legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.82rem; color: var(--ink-soft); margin: 20px 0; }
 
 /* --------------------------------------------------------------- dates */
@@ -463,8 +460,8 @@ textarea.input { resize: vertical; }
 .featured-photo, .featured-photo-placeholder { width: 140px; height: 140px; border-radius: 50%; object-fit: cover; }
 .featured-photo-placeholder { display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 2.6rem; font-weight: 600; color: #fff; }
 
-.history-lane { position: absolute; top: 250px; left: 0; right: 0; height: 65px; border-top: 1px dashed var(--line-bright); padding-top: 10px; }
-.history-event { position: absolute; top: 0; display: flex; flex-direction: column; align-items: center; transform: translateX(-50%); width: 100px; cursor: default; }
+.history-lane { position: absolute; left: 0; right: 0; height: 65px; border-top: 1px dashed var(--line-bright); padding-top: 10px; }
+.history-event { position: absolute; display: flex; flex-direction: column; align-items: center; transform: translateX(-50%); width: 100px; cursor: default; }
 .history-icon { font-size: 1.05rem; line-height: 1; }
 .history-card { font-size: 0.66rem; text-align: center; color: var(--ink-faint); line-height: 1.25; margin-top: 3px; }
 .history-card strong { display: block; font-family: var(--font-mono); font-size: 0.72rem; }
@@ -473,13 +470,30 @@ textarea.input { resize: vertical; }
 .history-event.scope-region .history-card strong { color: var(--teal); }
 
 .geo-map-wrap { border: 1px solid var(--line); border-radius: var(--radius); background: radial-gradient(ellipse at center, rgba(139,108,247,0.08), transparent 70%); overflow: auto; }
-.geo-map { display: block; width: 100%; height: auto; min-width: 700px; }
+.geo-map { display: block; width: 100%; height: auto; min-width: 760px; }
+
+.geo-frame { fill: none; stroke: var(--line-bright); stroke-width: 1.5; }
+.geo-frame-inner { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 4 5; }
+.geo-contour { fill: none; stroke: var(--line); stroke-width: 1; opacity: 0.35; }
+.geo-river { fill: none; stroke: var(--teal); stroke-width: 2.5; opacity: 0.22; }
+.geo-river-thin { stroke-width: 1.4; opacity: 0.16; }
+.geo-compass circle { fill: none; stroke: var(--line-bright); stroke-width: 1; }
+.geo-compass line { stroke: var(--line-bright); stroke-width: 1; }
+.geo-compass text { font-family: var(--font-mono); font-size: 10px; fill: var(--ink-faint); }
+
 .geo-node { cursor: pointer; }
+.geo-node .geo-halo { fill: currentColor; opacity: 0.06; }
+.geo-node .geo-ring { fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.35; }
 .geo-node .geo-dot { fill: var(--bg-elevated); stroke: var(--teal); stroke-width: 2; filter: drop-shadow(0 0 6px currentColor); transition: r 0.15s; }
+.geo-node.status-vanished { color: var(--coral); }
 .geo-node.status-vanished .geo-dot { stroke: var(--coral); stroke-dasharray: 3 3; }
+.geo-node.status-existing { color: var(--teal); }
 .geo-node.status-existing .geo-dot { stroke: var(--teal); }
+.geo-node.status-unknown { color: var(--ink-faint); }
 .geo-node.status-unknown .geo-dot { stroke: var(--ink-faint); }
 .geo-node:hover .geo-dot { stroke-width: 3; }
 .geo-label { font-family: var(--font-body); font-weight: 700; font-size: 11px; fill: var(--ink); }
 .geo-count { font-family: var(--font-mono); font-size: 10px; fill: var(--ink-soft); }
-.geo-migration { stroke: var(--gold); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.45; }
+.geo-migration { stroke: var(--gold); stroke-width: 1.3; stroke-dasharray: 2 5; opacity: 0.5; fill: none; }
+
+.verified-tag { font-family: var(--font-mono); font-size: 0.68rem; color: var(--teal); background: var(--teal-soft); padding: 1px 8px; border-radius: 10px; margin-left: 6px; }

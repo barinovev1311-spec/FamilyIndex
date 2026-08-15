@@ -168,6 +168,13 @@ export const DB = {
   async aiCompareCandidate(personId, candidate, candidateId) { return api("/api/ai/compare-candidate", "POST", { password, personId, candidate, candidateId }); },
   async aiDossier(personId, style) { return api("/api/ai/dossier", "POST", { password, personId, style }); },
   async aiSurname(surname, familyContext) { return api("/api/ai/surname", "POST", { password, surname, familyContext }); },
+  async aiTest() { return api("/api/ai/test", "POST", { password }); },
+  async setSurnameVerified(surnameKey, verified) {
+    const r = await api(`/api/surname/${encodeURIComponent(surnameKey)}/verify`, "PUT", { password, verified });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+  },
+  isSurnameVerified(surnameKey) { return !!overlay?.surnameVerifications?.[surnameKey]; },
   async aiHistoricalContext(personId, yearFrom, yearTo) { return api("/api/ai/historical-context", "POST", { password, personId, yearFrom, yearTo }); },
   async aiAnalyzeBranch(branchLabel, personIds) { return api("/api/ai/analyze-branch", "POST", { password, branchLabel, personIds }); },
   async aiAnalyzeTree(stats, topGaps) { return api("/api/ai/analyze-tree", "POST", { password, stats, topGaps }); },
