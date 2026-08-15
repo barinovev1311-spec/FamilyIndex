@@ -31,7 +31,7 @@ const MIME = {
 };
 
 function emptyOverlay() {
-  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [], surnameVerifications: {} };
+  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [], surnameVerifications: {}, chronicle: null };
 }
 
 function ensureOverlay() {
@@ -390,6 +390,38 @@ const server = http.createServer((req, res) => {
         const ctx = persons.map((p) => `${[p.lastName, p.firstName, p.middleName].filter(Boolean).join(" ")}`).join("\n");
         const result = await researchService.analyzeBranch(body.branchLabel || "", ctx);
         sendJSON(res, 200, result);
+      } catch (e) { sendAiError(res, e); }
+    });
+  }
+
+  if (p === "/api/ai/chronicle" && req.method === "POST") {
+    return readBody(req, async (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      try {
+        const state = mergedState();
+        const marina = getPerson(state, body.marinaId) || { firstName: "Марина" };
+        const marinaName = [marina.lastName, marina.firstName, marina.middleName].filter(Boolean).join(" ");
+
+        const personsLines = state.persons.map((p) => {
+          const fio = [p.lastName, p.firstName, p.middleName].filter(Boolean).join(" ");
+          const bits = [fio];
+          if (p.birth && p.birth.mode !== "unknown") bits.push(`даты рождения: ${JSON.stringify(p.birth)}`);
+          if (p.birthPlace) bits.push(`место рождения: ${p.birthPlace}`);
+          if (!p.isLiving && p.death && p.death.mode !== "unknown") bits.push(`даты смерти: ${JSON.stringify(p.death)}`);
+          if (p.occupation) bits.push(`род занятий: ${p.occupation}`);
+          if (p.bio) bits.push(`известно: ${p.bio}`);
+          return `- ${bits.join("; ")}`;
+        }).join("\n");
+
+        const nameOf = (id) => { const pp = getPerson(state, id); return pp ? [pp.lastName, pp.firstName, pp.middleName].filter(Boolean).join(" ") : id; };
+        const relLabel = { parent: "родитель →", spouse: "супруги:", sibling: "брат/сестра:" };
+        const relationshipsLines = state.relationships.map((r) => `- ${nameOf(r.a)} ${relLabel[r.type] || r.type} ${nameOf(r.b)}`).join("\n");
+
+        const text = await researchService.generateChronicle(personsLines, relationshipsLines, marinaName);
+        const overlay = readOverlay();
+        overlay.chronicle = { text, generatedAt: new Date().toISOString(), personCount: state.persons.length };
+        writeOverlay(overlay);
+        sendJSON(res, 200, { chronicle: overlay.chronicle });
       } catch (e) { sendAiError(res, e); }
     });
   }

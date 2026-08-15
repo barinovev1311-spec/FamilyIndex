@@ -21,7 +21,7 @@ function isConfigured() {
 }
 
 // messages: [{role, content}], jsonMode: bool — просим строго JSON-ответ
-async function callDeepSeek(messages, { jsonMode = false, temperature = 0.4 } = {}) {
+async function callDeepSeek(messages, { jsonMode = false, temperature = 0.4, maxTokens } = {}) {
   if (!isConfigured()) {
     const err = new Error("DeepSeek API не настроен: не задана переменная окружения DEEPSEEK_API_KEY");
     err.code = "AI_NOT_CONFIGURED";
@@ -36,6 +36,7 @@ async function callDeepSeek(messages, { jsonMode = false, temperature = 0.4 } = 
     // а content остаётся пустым) — явно отключаем
     thinking: { type: "disabled" },
   };
+  if (maxTokens) body.max_tokens = maxTokens;
   if (jsonMode) body.response_format = { type: "json_object" };
 
   let res;

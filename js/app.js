@@ -106,7 +106,7 @@ document.addEventListener("input", (e) => {
 window.addEventListener("hashchange", render);
 DB.onChange(() => { if (!formDirty) render(); });
 
-const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["investigation", "Расследование"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
+const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["investigation", "Расследование"], ["chronicle", "Летопись"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
 
 function renderShell() {
   app.innerHTML = `
@@ -506,6 +506,78 @@ function treeAnalysisPanel() {
       <div id="tree-analysis-slot"></div>
       ${byPerson.length ? `<h4 class="eyebrow" style="margin-top:16px">Больше всего пробелов</h4>
         <ul class="note-list">${byPerson.map(({ p, count }) => `<li style="padding:6px 0"><a href="#/person/${p.id}">${esc(fullName(p))}</a> — <span class="missing-badge">${count}</span></li>`).join("")}</ul>` : ""}
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------- chronicle (летопись)
+
+// безопасно оборачивает упоминания известных людей в тексте кликабельными
+// span-ами (для всплывающих карточек), не трогая остальной текст. Сначала
+// экранируем HTML, потом ищем самые длинные имена первыми (через
+// плейсхолдеры), чтобы короткое имя не порвало уже найденное длинное.
+function wrapChronicleNames(rawText, persons) {
+  const escaped = esc(rawText);
+  const candidates = persons
+    .map((p) => ({ p, name: esc(fullName(p)) }))
+    .filter((x) => x.name && x.name.length > 4)
+    .sort((a, b) => b.name.length - a.name.length);
+
+  let result = escaped;
+  const placeholders = [];
+  candidates.forEach(({ p, name }, idx) => {
+    if (!result.includes(name)) return;
+    const token = `\u0001${idx}\u0001`;
+    result = result.split(name).join(token);
+    placeholders[idx] = { name, id: p.id };
+  });
+  placeholders.forEach((ph, idx) => {
+    if (!ph) return;
+    const token = `\u0001${idx}\u0001`;
+    result = result.split(token).join(`<span class="chronicle-name" data-action="chronicle-name-click" data-person="${ph.id}">${ph.name}</span>`);
+  });
+  return result;
+}
+
+// очень лёгкий markdown: "## Заголовок" -> h3, пустая строка = новый абзац
+function renderChronicleMarkdown(htmlEscapedWithNames) {
+  const lines = htmlEscapedWithNames.split(/\r?\n/);
+  const blocks = [];
+  let para = [];
+  const flush = () => { if (para.length) { blocks.push(`<p>${para.join(" ")}</p>`); para = []; } };
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) { flush(); return; }
+    if (/^##\s+/.test(trimmed)) { flush(); blocks.push(`<h3>${trimmed.replace(/^##\s+/, "")}</h3>`); return; }
+    if (/^#\s+/.test(trimmed)) { flush(); blocks.push(`<h2>${trimmed.replace(/^#\s+/, "")}</h2>`); return; }
+    para.push(trimmed);
+  });
+  flush();
+  return blocks.join("\n");
+}
+
+function viewChronicle() {
+  const db = DB.get();
+  const chronicle = DB.chronicle();
+  const currentCount = db.persons.length;
+  const stale = chronicle && chronicle.personCount !== currentCount;
+
+  return `
+    <div class="page-narrow">
+      <div class="page-head"><div><span class="eyebrow">Летопись рода</span><h1>История семьи от истоков</h1>
+      <p class="lede">Длинный связный рассказ обо всём известном роде — от самых дальних предков до наших дней, строго по фактам, без вымысла. Нажмите на имя в тексте, чтобы увидеть, кем человек приходится Марине.</p></div></div>
+
+      ${DB.hasSession() ? `<div class="panel" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+        <div>
+          ${chronicle ? `<p class="muted-small" style="margin:0">Составлена: ${new Date(chronicle.generatedAt).toLocaleString("ru-RU")} · людей на тот момент: ${chronicle.personCount}</p>` : `<p class="muted-small" style="margin:0">Летопись ещё не создавалась.</p>`}
+          ${stale ? `<p class="muted-small" style="margin:4px 0 0;color:var(--gold)">В дереве сейчас ${currentCount} человек — с момента составления летописи добавились новые. Обновите, чтобы включить их.</p>` : ""}
+        </div>
+        <button class="btn btn-primary" data-action="ai-generate-chronicle">🤖 ${chronicle ? "Обновить летопись" : "Создать летопись"}</button>
+      </div>` : ""}
+
+      <div id="chronicle-content">
+        ${chronicle ? `<div class="chronicle-text">${renderChronicleMarkdown(wrapChronicleNames(chronicle.text, db.persons))}</div>` : emptyState("Летописи пока нет", DB.hasSession() ? "Нажмите «Создать летопись» выше." : "Марина ещё не сформировала летопись рода через админку.")}
+      </div>
     </div>
   `;
 }
@@ -985,6 +1057,13 @@ function renderLightbox() {
     ${photos.length > 1 ? `<div class="lightbox-counter">${index + 1} / ${photos.length}</div>` : ""}
   `;
 }
+// клик вне всплывающей карточки летописи — закрывает её
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".name-popover") && !e.target.closest("[data-action='chronicle-name-click']")) {
+    document.querySelectorAll(".name-popover").forEach((el) => el.remove());
+  }
+});
+
 document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-action]");
   if (btn && btn.dataset.action === "open-lightbox") {
@@ -1731,6 +1810,7 @@ function render() {
   if (view === "tree") inner = viewTree();
   else if (view === "scheme") { inner = viewScheme(); after = initSchemeInteraction; }
   else if (view === "investigation") inner = viewInvestigation();
+  else if (view === "chronicle") inner = viewChronicle();
   else if (view === "timeline") inner = viewTimeline();
   else if (view === "dates") inner = viewDates();
   else if (view === "people") inner = viewPeople();
@@ -1919,6 +1999,43 @@ document.addEventListener("click", (e) => {
         <button class="btn btn-small btn-primary" type="submit">✓</button>
       </form>`;
   }
+
+  if (action === "ai-generate-chronicle") {
+    btn.disabled = true; btn.textContent = "Составляем летопись… это может занять минуту";
+    DB.aiChronicle(DB.get().marinaId).then(() => {
+      toast("Летопись готова.");
+    }).catch((err) => {
+      toast(err.code === "ai_not_configured" ? "ИИ не настроен на сервере." : "Не удалось составить летопись: " + err.message, true);
+    }).finally(() => { btn.disabled = false; btn.textContent = "🤖 Обновить летопись"; });
+  }
+
+  if (action === "chronicle-name-click") {
+    e.stopPropagation();
+    document.querySelectorAll(".name-popover").forEach((el) => el.remove());
+    const person = DB.getPerson(btn.dataset.person);
+    if (!person) return;
+    const rect = btn.getBoundingClientRect();
+    const pop = document.createElement("div");
+    pop.className = "name-popover";
+    const left = Math.min(Math.max(8, rect.left), window.innerWidth - 268);
+    pop.style.left = left + "px";
+    pop.style.top = (rect.bottom + window.scrollY + 6) + "px";
+    const photos = personPhotos(person);
+    pop.innerHTML = `
+      <button class="popover-close" data-action="close-popover">✕</button>
+      <div style="display:flex;gap:10px;align-items:center">
+        ${photos.length ? `<img class="calendar-avatar" src="${photos[0]}" alt="">` : `<div class="calendar-avatar-placeholder avatar-${branchClass(person)}">${esc((person.firstName || "?")[0])}</div>`}
+        <div>
+          <strong>${esc(fullName(person))}</strong>
+          <div class="muted-small">${esc(shortDates(person))}</div>
+        </div>
+      </div>
+      <div class="muted-small" style="color:var(--gold);margin-top:6px">${esc(person._meta.relationToMarina)}</div>
+      <a class="btn btn-small" href="#/person/${person.id}" style="margin-top:8px">Открыть карточку →</a>
+    `;
+    document.body.appendChild(pop);
+  }
+  if (action === "close-popover") { document.querySelectorAll(".name-popover").forEach((el) => el.remove()); }
 
   if (action === "ai-analyze-branch") {
     const root = DB.getPerson(btn.dataset.root);

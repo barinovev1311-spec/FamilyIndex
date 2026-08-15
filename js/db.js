@@ -178,6 +178,13 @@ export const DB = {
   async aiHistoricalContext(personId, yearFrom, yearTo) { return api("/api/ai/historical-context", "POST", { password, personId, yearFrom, yearTo }); },
   async aiAnalyzeBranch(branchLabel, personIds) { return api("/api/ai/analyze-branch", "POST", { password, branchLabel, personIds }); },
   async aiAnalyzeTree(stats, topGaps) { return api("/api/ai/analyze-tree", "POST", { password, stats, topGaps }); },
+  async aiChronicle(marinaId) {
+    const r = await api("/api/ai/chronicle", "POST", { password, marinaId });
+    overlay = { ...overlay, chronicle: r.chronicle };
+    listeners.forEach((fn) => fn());
+    return r.chronicle;
+  },
+  chronicle() { return overlay?.chronicle || null; },
 
   parentsOf(id) {
     return this.get().relationships.filter((r) => r.type === "parent" && r.b === id).map((r) => this.getPerson(r.a)).filter(Boolean);
