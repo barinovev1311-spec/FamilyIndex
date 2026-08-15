@@ -31,7 +31,7 @@ const MIME = {
 };
 
 function emptyOverlay() {
-  return { addedPersons: [], addedRelationships: [], edits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [] };
+  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [] };
 }
 
 function ensureOverlay() {
@@ -96,7 +96,9 @@ function mergedState() {
   const persons = [...seed.persons, ...overlay.addedPersons]
     .filter((p) => !overlay.deleted.includes(p.id))
     .map((p) => (overlay.edits[p.id] ? { ...p, ...overlay.edits[p.id] } : p));
-  const relationships = [...seed.relationships, ...overlay.addedRelationships].filter((r) => !overlay.deleted.includes(r.id));
+  const relationships = [...seed.relationships, ...overlay.addedRelationships]
+    .filter((r) => !overlay.deleted.includes(r.id))
+    .map((r) => (overlay.relationshipEdits[r.id] ? { ...r, ...overlay.relationshipEdits[r.id] } : r));
   return { persons, relationships, overlay, seed };
 }
 function getPerson(state, id) { return state.persons.find((p) => p.id === id); }
@@ -188,6 +190,16 @@ const server = http.createServer((req, res) => {
       sendJSON(res, 200, { overlay, removed: !!relId });
     });
   }
+  const relIdMatch = p.match(/^\/api\/relationship\/([^/]+)$/);
+  if (relIdMatch && req.method === "PUT") {
+    return readBody(req, (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      const overlay = readOverlay();
+      overlay.relationshipEdits[relIdMatch[1]] = { ...(overlay.relationshipEdits[relIdMatch[1]] || {}), ...body.patch };
+      writeOverlay(overlay);
+      sendJSON(res, 200, { overlay });
+    });
+  }
 
   // ---------------------------------------------------------------- точки расследования (статусы пробелов)
   const investMatch = p.match(/^\/api\/investigation\/([^/]+)\/([^/]+)$/);
@@ -269,7 +281,20 @@ const server = http.createServer((req, res) => {
         const state = mergedState();
         const person = getPerson(state, body.personId);
         if (!person) return sendJSON(res, 404, { error: "person_not_found" });
-        const result = await researchService.generateSearchStrategies(person, relativesOf(state, person.id));
+        const notesText = state.overlay.notes
+          .filter((n) => (n.targetType === "person" && n.targetId === person.id) || (n.targetType === "investigation" && n.targetId.startsWith(person.id + ":")))
+          .map((n) => `[${n.noteType}] ${n.text}`).join("\n");
+        const result = await researchService.generateSearchStrategies(person, relativesOf(state, person.id), notesText);
+        sendJSON(res, 200, result);
+      } catch (e) { sendAiError(res, e); }
+    });
+  }
+
+  if (p === "/api/ai/analyze-tree" && req.method === "POST") {
+    return readBody(req, async (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      try {
+        const result = await researchService.analyzeTreeNarrative(body.stats || {}, body.topGaps || []);
         sendJSON(res, 200, result);
       } catch (e) { sendAiError(res, e); }
     });

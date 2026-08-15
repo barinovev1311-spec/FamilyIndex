@@ -3,6 +3,7 @@
 // узкий промпт со своими правилами честности, а не общий чат.
 
 const { callDeepSeek } = require("./ai-service");
+const { buildAllLinks } = require("./search-providers");
 
 const HONESTY_RULES = `
 Правила, которые нельзя нарушать:
@@ -32,7 +33,7 @@ function relativesSummary(relLabelled) {
   return relLabelled.map((r) => `${r.role}: ${[r.person.lastName, r.person.firstName, r.person.middleName].filter(Boolean).join(" ")}`).join("\n");
 }
 
-async function generateSearchStrategies(person, relatives) {
+async function generateSearchStrategies(person, relatives, notesText) {
   const prompt = `Ты помогаешь в семейном генеалогическом поиске. У тебя НЕТ доступа к интернету — ты не можешь сам искать, только предлагать стратегию человеку, который будет искать сам.
 ${HONESTY_RULES}
 
@@ -42,12 +43,16 @@ ${personSummary(person)}
 Известные родственники:
 ${relativesSummary(relatives) || "неизвестны"}
 
-Составь несколько (4-7) конкретных поисковых запросов (готовые строки для поисковика или архивного каталога) и короткие пояснения, что и где стоит проверить в первую очередь (архивы, форумы, региональные базы). Учитывай варианты написания имени, инициалы, вероятный диапазон дат, известные места.
+Заметки Марины об этом человеке или расследовании (могут содержать важные устные сведения, гипотезы, семейные воспоминания):
+${notesText || "заметок нет"}
+
+Составь несколько (4-7) конкретных поисковых запросов (готовые строки для поисковика или архивного каталога) и короткие пояснения, что и где стоит проверить в первую очередь (архивы, форумы, региональные базы). Учитывай варианты написания имени, инициалы, вероятный диапазон дат, известные места, а также зацепки из заметок Марины, если они есть.
 
 Ответь строго в формате JSON:
 {"queries": ["строка запроса 1", "строка запроса 2", ...], "strategyNotes": "короткий абзац с общей стратегией и приоритетами поиска"}`;
 
-  return callDeepSeek([{ role: "user", content: prompt }], { jsonMode: true });
+  const aiResult = await callDeepSeek([{ role: "user", content: prompt }], { jsonMode: true });
+  return { ...aiResult, links: buildAllLinks(person) };
 }
 
 async function compareCandidate(person, candidate) {
@@ -64,6 +69,7 @@ ${personSummary(person)}
 Место: ${candidate.place || "неизвестно"}
 Предполагаемая связь: ${candidate.assumedRelation || "не указана"}
 Найденная информация: ${candidate.foundInfo || "нет"}
+Заметки Марины по этому кандидату: ${candidate.notes || "нет"}
 
 Сравни их и ответь строго в формате JSON:
 {"matchStrength": "strong" | "possible" | "weak", "matchingFacts": ["совпадающий факт 1", ...], "contradictions": ["противоречие 1", ...], "explanation": "короткое объяснение вывода, 2-4 предложения"}`;
@@ -119,6 +125,26 @@ ${HONESTY_RULES}
   return callDeepSeek([{ role: "user", content: prompt }], { jsonMode: true });
 }
 
+async function analyzeTreeNarrative(stats, topGaps) {
+  const prompt = `У тебя есть сводка по пробелам в семейном дереве (числа посчитаны программно, доверяй им):
+Всего потенциальных точек продолжения: ${stats.total}
+Людей с неизвестными родителями: ${stats.unknownParents}
+Непроверенных линий потомков (не знаем, были ли дети): ${stats.uncheckedDescendantLines}
+Боковых ветвей, которые могут обрываться: ${stats.sideBranches}
+Людей с неизвестными братьями/сёстрами: ${stats.unknownSiblings}
+
+Самые "богатые" пробелами люди (топ по числу открытых точек):
+${topGaps.map((t) => `- ${t.name}: ${t.count} пробел(ов)`).join("\n") || "нет данных"}
+${HONESTY_RULES}
+
+Дай короткую (3-5 предложений) рекомендацию, с чего разумнее начать дальнейшее исследование дерева и почему.
+
+Ответь строго в формате JSON:
+{"recommendation": "текст рекомендации"}`;
+
+  return callDeepSeek([{ role: "user", content: prompt }], { jsonMode: true });
+}
+
 async function analyzeBranch(branchLabel, personsContext) {
   const prompt = `Проанализируй ветвь семейного дерева и предложи наиболее перспективные направления дальнейшего поиска.
 ${HONESTY_RULES}
@@ -140,4 +166,5 @@ module.exports = {
   explainSurname,
   historicalContextFor,
   analyzeBranch,
+  analyzeTreeNarrative,
 };

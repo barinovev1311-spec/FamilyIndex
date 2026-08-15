@@ -16,7 +16,9 @@ function buildState() {
   const persons = [...seed.persons, ...overlay.addedPersons]
     .filter((p) => !overlay.deleted.includes(p.id))
     .map((p) => (overlay.edits[p.id] ? { ...p, ...overlay.edits[p.id] } : p));
-  const relationships = [...seed.relationships, ...overlay.addedRelationships].filter((r) => !overlay.deleted.includes(r.id));
+  const relationships = [...seed.relationships, ...overlay.addedRelationships]
+    .filter((r) => !overlay.deleted.includes(r.id))
+    .map((r) => (overlay.relationshipEdits && overlay.relationshipEdits[r.id] ? { ...r, ...overlay.relationshipEdits[r.id] } : r));
   const relMap = computeAllRelations(persons, relationships, seed.marinaId, seed.husbandId);
   persons.forEach((p) => { p._meta = relMap.get(p.id) || { generation: null, side: null, relationToMarina: "родство не установлено" }; });
   return { persons, relationships, marinaId: seed.marinaId, husbandId: seed.husbandId, researchNotes: seed.researchNotes };
@@ -108,6 +110,11 @@ export const DB = {
     listeners.forEach((fn) => fn());
     return r.removed;
   },
+  async updateRelationship(id, patch) {
+    const r = await api(`/api/relationship/${id}`, "PUT", { password, patch });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+  },
   async resetOverlay() {
     const r = await api("/api/reset", "POST", { password });
     overlay = r.overlay;
@@ -163,6 +170,7 @@ export const DB = {
   async aiSurname(surname, familyContext) { return api("/api/ai/surname", "POST", { password, surname, familyContext }); },
   async aiHistoricalContext(personId, yearFrom, yearTo) { return api("/api/ai/historical-context", "POST", { password, personId, yearFrom, yearTo }); },
   async aiAnalyzeBranch(branchLabel, personIds) { return api("/api/ai/analyze-branch", "POST", { password, branchLabel, personIds }); },
+  async aiAnalyzeTree(stats, topGaps) { return api("/api/ai/analyze-tree", "POST", { password, stats, topGaps }); },
 
   parentsOf(id) {
     return this.get().relationships.filter((r) => r.type === "parent" && r.b === id).map((r) => this.getPerson(r.a)).filter(Boolean);

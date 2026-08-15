@@ -9,6 +9,7 @@ export const GAP_LABELS = {
   siblings: "Неизвестны братья/сёстры",
   spouse: "Неизвестен супруг(а)",
   children: "Неизвестно, были ли дети",
+  descendants: "Непроверенная боковая ветвь потомков",
   maidenName: "Неизвестна девичья фамилия",
   dates: "Неизвестна дата рождения",
   places: "Неизвестно место рождения",
@@ -77,6 +78,11 @@ export function computeGaps(person, db) {
   if (!person.birth || person.birth.mode === "unknown") raw.push("dates");
   if (!person.birthPlace) raw.push("places");
 
+  const kids = db.childrenOf(person.id);
+  if (kids.length > 0 && kids.every((k) => db.childrenOf(k.id).length === 0 && db.investigationStatus(k.id, "children") === "unknown")) {
+    raw.push("descendants");
+  }
+
   return raw
     .map((type) => ({ type, label: GAP_LABELS[type], status: db.investigationStatus(person.id, type) }))
     .filter((g) => !TERMINAL_STATUSES.has(g.status));
@@ -84,6 +90,22 @@ export function computeGaps(person, db) {
 
 export function hasAnyGap(person, db) {
   return computeGaps(person, db).length > 0;
+}
+
+// агрегированная сводка для «🤖 Проанализировать дерево» — считается на
+// лету по тем же самым правилам, без обращения к ИИ (числа должны быть
+// точными и мгновенными, а не сгенерированными)
+export function computeTreeStats(db) {
+  let total = 0, unknownParents = 0, uncheckedDescendantLines = 0, sideBranches = 0, unknownSiblings = 0;
+  db.get().persons.forEach((p) => {
+    const gaps = computeGaps(p, db);
+    total += gaps.length;
+    if (gaps.some((g) => g.type === "father" || g.type === "mother" || g.type === "parents")) unknownParents++;
+    if (gaps.some((g) => g.type === "children")) uncheckedDescendantLines++;
+    if (gaps.some((g) => g.type === "descendants")) sideBranches++;
+    if (gaps.some((g) => g.type === "siblings")) unknownSiblings++;
+  });
+  return { total, unknownParents, uncheckedDescendantLines, sideBranches, unknownSiblings };
 }
 
 export function gapStatusColor(status) {

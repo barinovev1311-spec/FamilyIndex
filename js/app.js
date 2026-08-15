@@ -1,7 +1,7 @@
 import { guessSurnameOrigin, sideLabelForOrigin, stripGenderSuffix } from "./surname-rules.js";
 import { DB } from "./db.js";
 import { generationOffsetRelativeTo, relationPathToMarina } from "./relations.js";
-import { computeGaps, GAP_LABELS, STATUS_LABELS, gapStatusColor } from "./gaps.js";
+import { computeGaps, GAP_LABELS, STATUS_LABELS, gapStatusColor, computeTreeStats } from "./gaps.js";
 
 const app = document.getElementById("app");
 
@@ -238,9 +238,95 @@ function constellationHeroSVG() {
   return svg;
 }
 
+function signedDayDiff(month, day) {
+  const today = new Date();
+  const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  let candidate = new Date(todayMid.getFullYear(), month, day);
+  let diff = Math.round((candidate - todayMid) / 86400000);
+  if (diff > 182) diff -= 365;
+  if (diff < -182) diff += 365;
+  return diff;
+}
+
+function todayInFamily() {
+  const db = DB.get();
+  const results = [];
+  db.persons.forEach((p) => {
+    if (p.birth?.mode === "exact" && p.birth.exact) {
+      const d = new Date(p.birth.exact + "T00:00:00");
+      const diff = signedDayDiff(d.getMonth(), d.getDate());
+      if (Math.abs(diff) <= 3) {
+        results.push({ p, diff, kind: p.isLiving ? "birthday" : "birth-anniversary", label: p.isLiving ? "День рождения" : "Годовщина рождения" });
+      }
+    }
+    if (!p.isLiving && p.death?.mode === "exact" && p.death.exact) {
+      const d = new Date(p.death.exact + "T00:00:00");
+      const diff = signedDayDiff(d.getMonth(), d.getDate());
+      if (Math.abs(diff) <= 3) results.push({ p, diff, kind: "memorial", label: "День памяти" });
+    }
+  });
+  db.relationships.forEach((r) => {
+    if (r.type === "spouse" && r.marriageDate?.mode === "exact" && r.marriageDate.exact) {
+      const d = new Date(r.marriageDate.exact + "T00:00:00");
+      const diff = signedDayDiff(d.getMonth(), d.getDate());
+      if (Math.abs(diff) <= 3) {
+        const a = DB.getPerson(r.a), b = DB.getPerson(r.b);
+        if (a && b) results.push({ p: a, p2: b, diff, kind: "anniversary", label: "Годовщина свадьбы", years: new Date().getFullYear() - d.getFullYear() });
+      }
+    }
+  });
+  results.sort((a, b) => a.diff - b.diff);
+  return results;
+}
+
+function todayEventRow(ev) {
+  const when = ev.diff === 0 ? "сегодня" : ev.diff > 0 ? `через ${ev.diff} ${ruPlural(ev.diff, ["день", "дня", "дней"])}` : `${-ev.diff} ${ruPlural(-ev.diff, ["день", "дня", "дней"])} назад`;
+  const branch = branchClass(ev.p);
+  const photos = personPhotos(ev.p);
+  const avatar = photos.length ? `<img class="calendar-avatar" src="${photos[0]}" alt="">` : `<div class="calendar-avatar-placeholder avatar-${branch}">${esc((ev.p.firstName || "?")[0])}</div>`;
+  const name = ev.kind === "anniversary" ? `${esc(fullName(ev.p))} и ${esc(fullName(ev.p2))}` : esc(fullName(ev.p));
+  return `
+    <a class="calendar-row" href="#/person/${ev.p.id}">
+      ${avatar}
+      <div class="calendar-info"><div class="calendar-name">${name}</div><div class="calendar-sub muted">${esc(ev.label)}${ev.years ? " · " + ev.years + " лет" : ""}</div></div>
+      <span class="date-badge ${ev.diff === 0 ? "today" : ev.diff < 0 ? "" : "soon"}">${when}</span>
+    </a>`;
+}
+
+function featuredPersonToday() {
+  const persons = DB.get().persons;
+  if (!persons.length) return null;
+  const eligible = persons.filter((p) => p.bio || personPhotos(p).length);
+  const pool = eligible.length ? eligible : persons;
+  const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
+  return pool[dayOfYear % pool.length];
+}
+
+function featuredPersonBlock() {
+  const p = featuredPersonToday();
+  if (!p) return "";
+  const photos = personPhotos(p);
+  const photo = photos.length ? `<img class="featured-photo" src="${photos[0]}" alt="">` : `<div class="featured-photo-placeholder avatar-${branchClass(p)}">${esc((p.firstName || "?")[0])}</div>`;
+  return `
+    <div class="featured-person">
+      ${photo}
+      <div>
+        <span class="eyebrow">Сегодня вспомним</span>
+        <h3>${esc(fullName(p))}</h3>
+        <p class="muted-small">${esc(shortDates(p))} · ${esc(p._meta.relationToMarina)}</p>
+        ${p.bio ? `<p class="muted-small">${esc(p.bio.slice(0, 220))}${p.bio.length > 220 ? "…" : ""}</p>` : ""}
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <a class="btn btn-small" href="#/person/${p.id}">Открыть карточку</a>
+          <a class="btn btn-small" href="#/scheme" data-action="show-in-tree" data-id="${p.id}">Показать в дереве</a>
+        </div>
+      </div>
+    </div>`;
+}
+
 function viewHome() {
   const stats = DB.stats();
   const origins = window.SURNAME_ORIGINS.slice(0, 3);
+  const today = todayInFamily();
   return `
     <section class="hero">
       <div class="hero-inner">
@@ -264,13 +350,21 @@ function viewHome() {
 
     <section class="block">
       <div class="block-inner">
+        <div class="block-head"><span class="eyebrow">Живая лента</span><h2>Сегодня в семье</h2></div>
+        ${today.length === 0 ? `<p class="muted">Ближайшие 3 дня — без дат рождения, памяти или свадеб в архиве.</p>` : `<div class="calendar-list">${today.map(todayEventRow).join("")}</div>`}
+        ${featuredPersonBlock()}
+      </div>
+    </section>
+
+    <section class="block tinted">
+      <div class="block-inner">
         <div class="block-head"><span class="eyebrow">Откуда фамилии</span><h2>Каждая фамилия — это когда-то было прозвище, ремесло или имя отца</h2></div>
         <div class="origin-grid">${origins.map(originCard).join("")}</div>
         <p style="margin-top:22px"><a href="#/origins">Читать про все фамилии рода →</a></p>
       </div>
     </section>
 
-    <section class="block tinted">
+    <section class="block">
       <div class="block-inner">
         <div class="block-head">
           <span class="eyebrow">Общий, живой архив</span>
@@ -286,6 +380,8 @@ function viewHome() {
 function originCard(o) {
   const cls = o.side.includes("отца") ? "side-father" : o.side.includes("матери") ? "side-mother" : "side-other";
   const slotId = `surname-ai-${stripGenderSuffix(o.surname).toLowerCase().replace(/[^a-zа-я]/gi, "")}`;
+  const members = DB.get().persons.filter((p) => stripGenderSuffix(p.lastName).toLowerCase() === stripGenderSuffix(o.surname).toLowerCase())
+    .sort((a, b) => (birthYear(a) || 9999) - (birthYear(b) || 9999));
   return `
     <div class="origin-card ${cls}">
       <div class="side-tag">${esc(o.side)}</div>
@@ -295,6 +391,9 @@ function originCard(o) {
       ${o.auto ? `<span class="uncertain-tag auto-tag">⚙ автоматически по общим правилам, не проверено</span>` : o.uncertain ? `<span class="uncertain-tag">версия не окончательная</span>` : ""}
       ${DB.hasSession() ? `<div style="margin-top:10px"><button class="btn btn-small" data-action="ai-surname" data-surname="${esc(o.surname)}" data-slot="${slotId}">🤖 Уточнить через ИИ</button></div>` : ""}
       <div id="${slotId}"></div>
+      ${members.length ? `<details class="surname-members"><summary>В дереве: ${members.length} ${ruPlural(members.length, ["человек", "человека", "человек"])}</summary>
+        <ul class="note-list" style="margin-top:8px">${members.map((m) => `<li style="padding:6px 0"><a href="#/person/${m.id}">${esc(fullName(m))}</a> <span class="muted-small">${esc(shortDates(m))}</span></li>`).join("")}</ul>
+      </details>` : ""}
     </div>
   `;
 }
@@ -364,6 +463,7 @@ function candidateCard(c) {
       <div class="muted-small">${esc(c.birthYear || "?")}${c.deathYear ? "–" + esc(c.deathYear) : ""} ${c.place ? "· " + esc(c.place) : ""}</div>
       ${anchor ? `<div class="muted-small">к: <a href="#/person/${anchor.id}">${esc(fullName(anchor))}</a> ${c.assumedRelation ? "(" + esc(c.assumedRelation) + ")" : ""}</div>` : ""}
       ${c.foundInfo ? `<p class="muted-small">${esc(c.foundInfo)}</p>` : ""}
+      ${c.notes ? `<p class="muted-small" style="color:var(--violet)">📝 ${esc(c.notes)}</p>` : ""}
       ${c.matchStrength ? `<span class="match-badge ${MATCH_CLASS[c.matchStrength]}">${esc(MATCH_LABELS[c.matchStrength])}</span>` : ""}
       ${c.matchingFacts && c.matchingFacts.length ? `<ul class="reasons">${c.matchingFacts.map((f) => `<li class="reason-pos">+ ${esc(f)}</li>`).join("")}</ul>` : ""}
       ${c.contradictions && c.contradictions.length ? `<ul class="reasons">${c.contradictions.map((f) => `<li class="reason-neg">− ${esc(f)}</li>`).join("")}</ul>` : ""}
@@ -380,12 +480,35 @@ function candidateCard(c) {
   `;
 }
 
+function treeAnalysisPanel() {
+  const persons = DB.get().persons;
+  const stats = computeTreeStats(DB);
+  const byPerson = persons.map((p) => ({ p, count: computeGaps(p, DB).length })).filter((x) => x.count > 0).sort((a, b) => b.count - a.count).slice(0, 5);
+  return `
+    <div class="panel">
+      <h4 class="eyebrow">🤖 Анализ дерева</h4>
+      <div class="tree-stats-grid">
+        <div class="tree-stat"><strong>${stats.total}</strong><span>потенциальных точек продолжения</span></div>
+        <div class="tree-stat"><strong>${stats.unknownParents}</strong><span>неизвестных родителей</span></div>
+        <div class="tree-stat"><strong>${stats.uncheckedDescendantLines}</strong><span>непроверенных линий потомков</span></div>
+        <div class="tree-stat"><strong>${stats.sideBranches}</strong><span>боковых ветвей под вопросом</span></div>
+        <div class="tree-stat"><strong>${stats.unknownSiblings}</strong><span>человек с неизвестными братьями/сёстрами</span></div>
+      </div>
+      ${DB.hasSession() ? `<button class="btn btn-small btn-primary" data-action="ai-analyze-tree" style="margin-top:12px">🤖 Что исследовать в первую очередь</button>` : ""}
+      <div id="tree-analysis-slot"></div>
+      ${byPerson.length ? `<h4 class="eyebrow" style="margin-top:16px">Больше всего пробелов</h4>
+        <ul class="note-list">${byPerson.map(({ p, count }) => `<li style="padding:6px 0"><a href="#/person/${p.id}">${esc(fullName(p))}</a> — <span class="missing-badge">${count}</span></li>`).join("")}</ul>` : ""}
+    </div>
+  `;
+}
+
 function viewInvestigation() {
   const all = DB.candidates();
   return `
     <div class="page">
       <div class="page-head"><div><span class="eyebrow">Расследование</span><h1>Потенциальные родственники</h1>
       <p class="lede">Кандидаты появляются здесь, когда вы сохраняете найденного человека через кнопку «🤖 Искать» на точке расследования. Отклонённые не удаляются — чтобы не предлагать их снова.</p></div></div>
+      ${treeAnalysisPanel()}
       <div class="kanban">
         ${KANBAN_COLUMNS.map(([key, title]) => {
           const items = all.filter((c) => c.status === key);
@@ -398,13 +521,100 @@ function viewInvestigation() {
   `;
 }
 
-function viewGeography() {
+function collectPlaceData() {
+  const db = DB.get();
+  const places = new Map();
+  const addPerson = (placeName, p, role) => {
+    if (!placeName) return;
+    if (!places.has(placeName)) places.set(placeName, { name: placeName, people: [] });
+    places.get(placeName).people.push({ p, role });
+  };
+  db.persons.forEach((p) => {
+    addPerson(p.birthPlace, p, "birth");
+    if (p.deathPlace && p.deathPlace !== p.birthPlace) addPerson(p.deathPlace, p, "death");
+  });
+  const migrations = [];
+  db.persons.forEach((p) => {
+    if (p.birthPlace && p.deathPlace && p.birthPlace !== p.deathPlace) migrations.push({ from: p.birthPlace, to: p.deathPlace, p });
+  });
+  const list = [...places.values()].sort((a, b) => b.people.length - a.people.length);
+  return { list, migrations };
+}
+
+function layoutPlaces(list, w, h) {
+  const cx = w / 2, cy = h / 2;
+  const positions = new Map();
+  list.forEach((place, i) => {
+    if (i === 0) { positions.set(place.name, { x: cx, y: cy }); return; }
+    const angle = i * 137.508 * (Math.PI / 180);
+    const radius = 36 + Math.sqrt(i) * 40;
+    positions.set(place.name, { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) * 0.62 });
+  });
+  return positions;
+}
+
+function placeStatusOf(name) {
+  const curated = window.FAMILY_PLACES.find((pl) => name.includes(pl.name.replace(/^д\.\s*|^г\.\s*/, "")) || pl.name.includes(name));
+  return curated ? curated.status : "unknown";
+}
+
+function geographyMapSVG() {
+  const { list, migrations } = collectPlaceData();
+  if (list.length === 0) return `<p class="muted">Пока нет мест — заполните «Место рождения» у людей в архиве.</p>`;
+  const w = 900, h = 620;
+  const positions = layoutPlaces(list, w, h);
+  const maxCount = list[0].people.length;
+
+  let svg = `<svg class="geo-map" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Карта мест рода, по количеству связанных людей">`;
+
+  migrations.forEach((m) => {
+    const a = positions.get(m.from), b = positions.get(m.to);
+    if (!a || !b) return;
+    svg += `<line class="geo-migration" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`;
+  });
+
+  list.forEach((place, i) => {
+    const pos = positions.get(place.name);
+    const r = 5 + Math.sqrt(place.people.length / maxCount) * 22;
+    const status = placeStatusOf(place.name);
+    const showLabel = i < 14 || place.people.length >= 2;
+    const delay = (Math.min(i, 20) * 0.05).toFixed(2);
+    svg += `<g class="geo-node twinkle status-${status}" style="animation-delay:${delay}s" data-action="geo-select-place" data-place="${esc(place.name)}">
+      <circle class="geo-dot" cx="${pos.x}" cy="${pos.y}" r="${r}" />
+      ${showLabel ? `<text class="geo-label" x="${pos.x}" y="${pos.y - r - 6}" text-anchor="middle">${esc(place.name.length > 28 ? place.name.slice(0, 26) + "…" : place.name)}</text>` : ""}
+      <text class="geo-count" x="${pos.x}" y="${pos.y + 4}" text-anchor="middle">${place.people.length}</text>
+    </g>`;
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
+function placePeoplePanel(placeName) {
+  if (!placeName) return "";
+  const { list } = collectPlaceData();
+  const place = list.find((pl) => pl.name === placeName);
+  if (!place) return "";
   return `
-    <div class="page-narrow">
+    <div class="panel" id="place-people-panel">
+      <h4 class="eyebrow">${esc(placeName)} — ${place.people.length} ${ruPlural(place.people.length, ["человек", "человека", "человек"])}</h4>
+      <ul class="note-list">
+        ${place.people.map(({ p, role }) => `<li style="padding:6px 0"><a href="#/person/${p.id}">${esc(fullName(p))}</a> <span class="muted-small">${role === "birth" ? "родился(ась) здесь" : "умер(ла) здесь"}</span></li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function viewGeography() {
+  const selectedPlace = window.__selectedPlace || "";
+  return `
+    <div class="page">
       <div class="page-head"><div><span class="eyebrow">География рода</span><h1>Места, где жила семья</h1>
-      <p class="lede">Основано на месте рождения из карточек людей. Статус — по официальным данным об упразднённых населённых пунктах.</p></div></div>
-      ${constellationHeroSVG()}
-      <div class="place-list" style="margin-top:34px">
+      <p class="lede">Каждая точка — место, упомянутое в дереве (размер и цифра — сколько человек с ним связано); линии — переезды между рождением и смертью одного человека. Это не географическая карта с координатами, а условная схема связей. Нажмите на точку, чтобы увидеть, кто там жил.</p></div></div>
+      <div class="geo-map-wrap">${geographyMapSVG()}</div>
+      <div id="geo-people-slot">${placePeoplePanel(selectedPlace)}</div>
+
+      <div class="block-head" style="margin-top:36px"><span class="eyebrow">Из архивных источников</span><h2>Проверенные места</h2></div>
+      <div class="place-list">
         ${window.FAMILY_PLACES.map((pl) => `
           <div class="place-row">
             <div class="place-name">${esc(pl.name)}<div class="muted" style="font-size:0.8rem;font-weight:400">${esc(pl.region)}</div></div>
@@ -523,7 +733,7 @@ function investigationSection(p) {
 function closeLabel(type) {
   return { children: "детей не было", spouse: "брака не было", siblings: "братьев/сестёр не было",
     father: "отец неизвестен окончательно", mother: "мать неизвестна окончательно", parents: "родители неизвестны окончательно",
-    maidenName: "не применимо", dates: "не применимо", places: "не применимо" }[type] || "закрыть точку";
+    descendants: "ветвь дальше не продолжается", maidenName: "не применимо", dates: "не применимо", places: "не применимо" }[type] || "закрыть точку";
 }
 
 function gapCard(p, g) {
@@ -612,6 +822,7 @@ function candidateForm(personId, gapType) {
       <label>Место <input class="input" name="place"></label>
       <label>Предполагаемая связь <input class="input" name="assumedRelation" placeholder="напр. брат отца"></label>
       <label class="block">Что удалось найти <textarea class="input" name="foundInfo" rows="2"></textarea></label>
+      <label class="block">Заметки Марины <textarea class="input" name="notes" rows="2" placeholder="ваши личные соображения, сомнения, что ещё проверить"></textarea></label>
       <label>Ссылка на источник <input class="input" name="sourceUrl" type="url"></label>
       <button class="btn btn-small btn-primary" type="submit">Добавить в «Расследование»</button>
     </form>
@@ -637,12 +848,28 @@ function viewPerson(id) {
   const branch = branchClass(p);
   const photos = personPhotos(p);
 
+  const findRelId = (bId, type) => {
+    const rels = DB.get().relationships;
+    if (type === "spouse" || type === "sibling") return rels.find((r) => r.type === type && ((r.a === p.id && r.b === bId) || (r.a === bId && r.b === p.id)))?.id;
+    if (type === "parent-of-them") return rels.find((r) => r.type === "parent" && r.a === bId && r.b === p.id)?.id;
+    if (type === "parent-of-me") return rels.find((r) => r.type === "parent" && r.a === p.id && r.b === bId)?.id;
+    return null;
+  };
+
   const relGroup = (title, arr, relType) => arr.length ? `
     <div class="rel-group"><h4>${title}</h4><ul class="rel-list">
-      ${arr.map((x) => `<li>
+      ${arr.map((x) => {
+        const rel = relType === "spouse" ? DB.get().relationships.find((r) => r.type === "spouse" && ((r.a === p.id && r.b === x.id) || (r.a === x.id && r.b === p.id))) : null;
+        const relId = findRelId(x.id, relType);
+        return `<li>
         <a href="#/person/${x.id}">${esc(fullName(x))}</a> <span class="muted" style="font-size:0.8rem">${esc(shortDates(x))}</span>
+        ${rel ? (rel.marriageDate ? `<span class="muted-small">· брак: ${esc(dateLabel(rel.marriageDate))}</span>` : DB.hasSession() ? `<button class="btn btn-small" style="padding:1px 8px;font-size:0.7rem;margin-left:4px" data-action="edit-marriage-date" data-rel="${rel.id}">+ дата свадьбы</button>` : "") : ""}
+        <div id="marriage-form-${rel ? rel.id : ""}"></div>
+        ${DB.hasSession() && relId ? `<button class="btn btn-small" style="padding:1px 6px;font-size:0.7rem;margin-left:4px" data-action="open-note-form" data-target-type="relationship" data-target-id="${relId}" title="Заметка к этой связи">📝</button>` : ""}
         ${DB.hasSession() ? `<button class="btn btn-small btn-danger" style="padding:1px 8px;font-size:0.7rem;margin-left:6px" data-action="remove-relation" data-a="${p.id}" data-b="${x.id}" data-type="${relType}" title="Убрать эту связь">✕</button>` : ""}
-      </li>`).join("")}
+        ${relId ? `<div id="note-form-slot-relationship-${relId}"></div>` : ""}
+      </li>`;
+      }).join("")}
     </ul></div>` : "";
 
   return `
@@ -655,7 +882,12 @@ function viewPerson(id) {
           <span class="relation-badge">${esc(p._meta.relationToMarina)}</span>
           <h1>${esc(fullName(p))}</h1>
           <p class="muted">${esc(shortDates(p))} ${p.birthPlace ? "· " + esc(p.birthPlace) : ""}</p>
-          ${DB.hasSession() ? `<div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap"><button class="btn btn-small" data-action="edit-person" data-id="${p.id}">Редактировать</button><button class="btn btn-small" data-action="quick-add-open" data-id="${p.id}">+ Родственник</button><button class="btn btn-small" data-action="ai-dossier" data-id="${p.id}">🤖 Создать досье</button></div>` : ""}
+          ${DB.hasSession() ? `<div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-small" data-action="edit-person" data-id="${p.id}">Редактировать</button>
+            <button class="btn btn-small" data-action="quick-add-open" data-id="${p.id}">+ Родственник</button>
+            <button class="btn btn-small" data-action="ai-dossier" data-id="${p.id}">🤖 Создать досье</button>
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.78rem;color:var(--ink-soft)"><input type="checkbox" id="dossier-narrative-toggle"> художественный режим</label>
+          </div>` : ""}
         </div>
       </div>
 
@@ -835,7 +1067,9 @@ function viewScheme() {
             ${db.persons.filter((p) => offsets.has(p.id) || p.id === root.id).sort((a, b) => fullName(a).localeCompare(fullName(b), "ru")).map((p) => `<option value="${p.id}" ${p.id === root.id ? "selected" : ""}>${esc(fullName(p))}</option>`).join("")}
           </select>
         </label>
+        ${DB.hasSession() ? `<button class="btn btn-small" data-action="ai-analyze-branch" data-root="${root.id}">🤖 Исследовать эту ветку</button>` : ""}
       </div>
+      <div id="branch-analysis-slot"></div>
       <div class="scheme-legend">
         <span><span class="legend-dot" style="background:var(--violet)"></span>линия отца</span>
         <span><span class="legend-dot" style="background:var(--teal)"></span>линия матери</span>
@@ -945,26 +1179,43 @@ function initSchemeInteraction() {
 
 function viewTimeline() {
   const db = DB.get();
+  const personFilter = window.__timelinePerson || "all";
+  const branchFilter = window.__timelineBranch || "all";
+  const showHistory = window.__timelineHistory !== false; // по умолчанию включено
+
+  let people = db.persons;
+  if (personFilter !== "all") {
+    const focus = DB.getPerson(personFilter);
+    if (focus) people = [focus];
+  } else if (branchFilter !== "all") {
+    people = people.filter((p) => p._meta.side === branchFilter);
+  }
+
   const events = [];
-  db.persons.forEach((p) => {
+  people.forEach((p) => {
     const by = birthYear(p);
     if (by) events.push({ year: by, type: "birth", p });
     const dy = deathYear(p);
     if (dy) events.push({ year: dy, type: "death", p });
   });
-  if (events.length === 0) return `<div class="page">${emptyState("Пока нет дат", "Добавьте людям даты рождения через админку.")}</div>`;
+  if (events.length === 0) return `<div class="page">${emptyState("Нет дат для этого фильтра", "Попробуйте другой фильтр или добавьте даты через админку.")}</div>`;
   events.sort((a, b) => a.year - b.year);
-  const minYear = Math.floor(events[0].year / 10) * 10;
-  const maxYear = Math.ceil(events[events.length - 1].year / 10) * 10;
+  let minYear = Math.floor(events[0].year / 10) * 10;
+  let maxYear = Math.ceil(events[events.length - 1].year / 10) * 10;
+
+  const historyInRange = showHistory ? window.HISTORY_EVENTS.filter((h) => h.year >= minYear - 5 && h.year <= maxYear + 5) : [];
+  if (showHistory && historyInRange.length) {
+    minYear = Math.min(minYear, Math.floor(historyInRange[0].year / 10) * 10);
+  }
+
   const pxPerYear = 26;
   const trackWidth = (maxYear - minYear) * pxPerYear + 160;
-
+  const trackHeight = showHistory && historyInRange.length ? 330 : 320;
   const decades = [];
   for (let y = minYear; y <= maxYear; y += 10) decades.push(y);
-
   const xFor = (year) => 80 + (year - minYear) * pxPerYear;
 
-  let html = `<div class="timeline-track" style="width:${trackWidth}px">`;
+  let html = `<div class="timeline-track" style="width:${trackWidth}px;height:${trackHeight}px">`;
   html += `<div class="timeline-line"></div>`;
   decades.forEach((y) => {
     html += `<div class="timeline-tick" style="left:${xFor(y)}px"></div><div class="timeline-decade" style="left:${xFor(y)}px">${y}</div>`;
@@ -980,17 +1231,41 @@ function viewTimeline() {
       ${side === "above" ? `<div class="dot" style="background:${color};color:${color}"></div>` : ""}
     </div>`;
   });
+
+  if (showHistory && historyInRange.length) {
+    html += `<div class="history-lane">`;
+    historyInRange.forEach((h) => {
+      html += `<div class="history-event scope-${h.scope}" style="left:${xFor(h.year)}px" title="${esc(h.title)}">
+        <span class="history-icon">${h.icon}</span>
+        <div class="history-card"><strong>${h.year}</strong>${esc(h.title)}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
   html += `</div>`;
+
+  const branches = [["all", "все"], ["father", "линия отца"], ["mother", "линия матери"], ["husband", "родня мужа"]];
 
   return `
     <div class="page">
       <div class="page-head"><div><span class="eyebrow">Хронология</span><h1>Семья во времени</h1>
-      <p class="lede">Все известные даты рождения и смерти на одной шкале — от ${minYear} до наших дней. Листайте по горизонтали.</p></div></div>
+      <p class="lede">Все известные даты рождения и смерти на одной шкале — от ${minYear} до наших дней. Листайте по горизонтали.${showHistory ? " Серым рядом сверху — контекст истории страны и мира." : ""}</p></div></div>
+
+      <div class="filter-row">
+        <select class="input" data-action="timeline-person-select" style="width:auto">
+          <option value="all">Все люди</option>
+          ${db.persons.filter((p) => birthYear(p) || deathYear(p)).sort((a, b) => fullName(a).localeCompare(fullName(b), "ru")).map((p) => `<option value="${p.id}" ${personFilter === p.id ? "selected" : ""}>${esc(fullName(p))}</option>`).join("")}
+        </select>
+        ${branches.map(([k, l]) => `<button class="chip ${branchFilter === k && personFilter === "all" ? "active" : ""}" data-action="timeline-branch" data-branch="${k}">${l}</button>`).join("")}
+        <button class="chip ${showHistory ? "active" : ""}" data-action="timeline-toggle-history">${showHistory ? "Семья + история" : "Только семья"}</button>
+      </div>
+
       <div class="timeline-legend">
         <span><span class="legend-dot" style="background:var(--violet)"></span>линия отца</span>
         <span><span class="legend-dot" style="background:var(--teal)"></span>линия матери</span>
         <span><span class="legend-dot" style="background:var(--coral)"></span>родня мужа</span>
         <span><span class="legend-dot" style="background:var(--gold)"></span>родство не установлено</span>
+        ${showHistory ? `<span><span class="legend-dot" style="background:var(--ink-faint)"></span>исторические события (для контекста)</span>` : ""}
       </div>
       <div class="timeline-wrap">${html}</div>
     </div>
@@ -1412,6 +1687,15 @@ document.addEventListener("click", (e) => {
   // ------------------------------------------------------ точки расследования
   if (action === "toggle-gaps") { window.__showGaps = !window.__showGaps; render(); }
 
+  if (action === "geo-select-place") {
+    window.__selectedPlace = btn.dataset.place;
+    const slot = document.getElementById("geo-people-slot");
+    if (slot) slot.innerHTML = placePeoplePanel(btn.dataset.place);
+  }
+
+  if (action === "timeline-branch") { window.__timelineBranch = btn.dataset.branch; window.__timelinePerson = "all"; render(); }
+  if (action === "timeline-toggle-history") { window.__timelineHistory = !(window.__timelineHistory !== false); render(); }
+
   if (action === "gap-status") {
     guarded(() => DB.setInvestigationStatus(btn.dataset.id, btn.dataset.gap, btn.dataset.status));
   }
@@ -1483,14 +1767,57 @@ document.addEventListener("click", (e) => {
   }
 
   // --------------------------------------------------------------------- AI
+  if (action === "show-in-tree") { e.preventDefault(); window.__schemeRoot = btn.dataset.id; location.hash = "#/scheme"; }
+
+  if (action === "edit-marriage-date") {
+    const relId = btn.dataset.rel;
+    const slot = document.getElementById(`marriage-form-${relId}`);
+    if (slot) slot.innerHTML = `
+      <form data-form="marriage-date" data-rel="${relId}" style="display:inline-flex;gap:6px;align-items:center;margin-top:4px">
+        <input class="input" type="date" name="marriageDate" style="width:auto">
+        <button class="btn btn-small btn-primary" type="submit">✓</button>
+      </form>`;
+  }
+
+  if (action === "ai-analyze-branch") {
+    const root = DB.getPerson(btn.dataset.root);
+    const db = DB.get();
+    const geo = buildSchemeGeometry(root, db);
+    const personIds = [...geo.positions.keys()];
+    const slot = document.getElementById("branch-analysis-slot");
+    btn.disabled = true; btn.textContent = "Анализируем…";
+    DB.aiAnalyzeBranch(`Ветвь вокруг ${fullName(root)}`, personIds).then((r) => {
+      slot.innerHTML = `
+        <div class="panel">
+          <h4 class="eyebrow">🤖 Анализ ветви: ${esc(fullName(root))}</h4>
+          <p>${esc(r.summary || "")}</p>
+          ${r.priorities && r.priorities.length ? `<ul class="note-list">${r.priorities.map((pr) => `<li style="padding:8px 0"><strong>${esc(pr.title)}</strong><br><span class="muted-small">${esc(pr.reason)}</span></li>`).join("")}</ul>` : ""}
+        </div>`;
+    }).catch((err) => { slot.innerHTML = `<div class="panel">${aiErrorBox(err)}</div>`; })
+      .finally(() => { btn.disabled = false; btn.textContent = "🤖 Исследовать эту ветку"; });
+  }
+
+  if (action === "ai-analyze-tree") {
+    const stats = computeTreeStats(DB);
+    const byPerson = DB.get().persons.map((p) => ({ p, count: computeGaps(p, DB).length })).filter((x) => x.count > 0).sort((a, b) => b.count - a.count).slice(0, 5).map(({ p, count }) => ({ name: fullName(p), count }));
+    const slot = document.getElementById("tree-analysis-slot");
+    btn.disabled = true; btn.textContent = "Думаем…";
+    DB.aiAnalyzeTree(stats, byPerson).then((r) => {
+      slot.innerHTML = `<div class="ai-result">${esc(r.recommendation || "")}</div>`;
+    }).catch((err) => { slot.innerHTML = aiErrorBox(err); })
+      .finally(() => { btn.disabled = false; btn.textContent = "🤖 Что исследовать в первую очередь"; });
+  }
+
   if (action === "ai-dossier") {
     const personId = btn.dataset.id;
     const slot = document.getElementById("dossier-slot");
+    const narrative = document.getElementById("dossier-narrative-toggle")?.checked;
     btn.disabled = true; btn.textContent = "Собираем…";
-    DB.aiDossier(personId, "factual").then((d) => {
+    DB.aiDossier(personId, narrative ? "narrative" : "factual").then((d) => {
       slot.innerHTML = `
         <div class="panel">
-          <h4 class="eyebrow">🤖 Досье (по имеющимся данным)</h4>
+          <h4 class="eyebrow">🤖 ${narrative ? "История жизни" : "Досье (по имеющимся данным)"}</h4>
+          ${d.narrative ? `<p style="white-space:pre-line">${esc(d.narrative)}</p>` : ""}
           ${d.basics ? `<p><strong>Основное:</strong> ${esc(d.basics)}</p>` : ""}
           ${d.parents ? `<p><strong>Родители:</strong> ${esc(d.parents)}</p>` : ""}
           ${d.family ? `<p><strong>Семья:</strong> ${esc(d.family)}</p>` : ""}
@@ -1527,6 +1854,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.matches("[data-action='scheme-root-select']")) { window.__schemeRoot = el.value; render(); }
+  if (el.matches("[data-action='timeline-person-select']")) { window.__timelinePerson = el.value; render(); }
   if (el.matches("[data-action='toggle-incomplete-filter']")) { window.__adminIncompleteOnly = el.checked; render(); }
   if (el.name && el.name.endsWith("_mode")) {
     const fs = el.closest("[data-datefield]");
@@ -1661,13 +1989,23 @@ document.addEventListener("submit", (e) => {
         personId, gapType,
         name: fd.get("name")?.trim() || "", birthYear: fd.get("birthYear") || "", deathYear: fd.get("deathYear") || "",
         place: fd.get("place")?.trim() || "", assumedRelation: fd.get("assumedRelation")?.trim() || "",
-        foundInfo: fd.get("foundInfo")?.trim() || "", sourceUrl: sourceUrl || "",
+        foundInfo: fd.get("foundInfo")?.trim() || "", notes: fd.get("notes")?.trim() || "", sourceUrl: sourceUrl || "",
         sources: sourceUrl ? [{ url: sourceUrl }] : [],
       });
       await DB.setInvestigationStatus(personId, gapType, "candidate_found");
       const slot = document.getElementById(`candidate-form-slot-${personId}-${gapType}`);
       if (slot) slot.innerHTML = "";
       toast("Кандидат добавлен в «Расследование».");
+    }));
+  }
+
+  if (kind === "marriage-date") {
+    const relId = form.dataset.rel;
+    const value = form.marriageDate.value;
+    if (!value) return;
+    withSubmitLoading(form, "…", () => guarded(async () => {
+      await DB.updateRelationship(relId, { marriageDate: { mode: "exact", exact: value } });
+      toast("Дата свадьбы сохранена.");
     }));
   }
 });

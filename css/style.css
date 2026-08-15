@@ -449,3 +449,37 @@ textarea.input { resize: vertical; }
 .match-badge.match-possible { background: var(--gold-soft); color: var(--gold); }
 .match-badge.match-weak { background: var(--coral-soft); color: var(--coral); }
 .cand-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.surname-members { margin-top: 12px; border-top: 1px dashed var(--line-bright); padding-top: 10px; }
+.surname-members summary { cursor: pointer; font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-soft); }
+
+.tree-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 10px; }
+.tree-stat { background: var(--bg-elevated); border-radius: var(--radius-sm); padding: 12px; text-align: center; }
+.tree-stat strong { display: block; font-family: var(--font-mono); font-size: 1.4rem; color: var(--gold); }
+.tree-stat span { font-size: 0.72rem; color: var(--ink-soft); }
+
+.featured-person { display: grid; grid-template-columns: 140px 1fr; gap: 22px; margin-top: 26px; padding: 20px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius); align-items: center; }
+@media (max-width: 600px) { .featured-person { grid-template-columns: 1fr; text-align: center; } .featured-photo, .featured-photo-placeholder { margin: 0 auto; } }
+.featured-photo, .featured-photo-placeholder { width: 140px; height: 140px; border-radius: 50%; object-fit: cover; }
+.featured-photo-placeholder { display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 2.6rem; font-weight: 600; color: #fff; }
+
+.history-lane { position: absolute; top: 250px; left: 0; right: 0; height: 65px; border-top: 1px dashed var(--line-bright); padding-top: 10px; }
+.history-event { position: absolute; top: 0; display: flex; flex-direction: column; align-items: center; transform: translateX(-50%); width: 100px; cursor: default; }
+.history-icon { font-size: 1.05rem; line-height: 1; }
+.history-card { font-size: 0.66rem; text-align: center; color: var(--ink-faint); line-height: 1.25; margin-top: 3px; }
+.history-card strong { display: block; font-family: var(--font-mono); font-size: 0.72rem; }
+.history-event.scope-world .history-card strong { color: var(--coral); }
+.history-event.scope-country .history-card strong { color: var(--gold); }
+.history-event.scope-region .history-card strong { color: var(--teal); }
+
+.geo-map-wrap { border: 1px solid var(--line); border-radius: var(--radius); background: radial-gradient(ellipse at center, rgba(139,108,247,0.08), transparent 70%); overflow: auto; }
+.geo-map { display: block; width: 100%; height: auto; min-width: 700px; }
+.geo-node { cursor: pointer; }
+.geo-node .geo-dot { fill: var(--bg-elevated); stroke: var(--teal); stroke-width: 2; filter: drop-shadow(0 0 6px currentColor); transition: r 0.15s; }
+.geo-node.status-vanished .geo-dot { stroke: var(--coral); stroke-dasharray: 3 3; }
+.geo-node.status-existing .geo-dot { stroke: var(--teal); }
+.geo-node.status-unknown .geo-dot { stroke: var(--ink-faint); }
+.geo-node:hover .geo-dot { stroke-width: 3; }
+.geo-label { font-family: var(--font-body); font-weight: 700; font-size: 11px; fill: var(--ink); }
+.geo-count { font-family: var(--font-mono); font-size: 10px; fill: var(--ink-soft); }
+.geo-migration { stroke: var(--gold); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.45; }
