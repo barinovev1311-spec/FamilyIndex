@@ -82,6 +82,7 @@ function scoreCandidate(child, cand, db) {
 export function computeRelationshipSuggestions(db) {
   const state = db.get();
   const persons = state.persons;
+  const dismissed = db.dismissedSuggestionKeys ? db.dismissedSuggestionKeys() : new Set();
   const suggestions = [];
 
   persons.forEach((child) => {
@@ -97,6 +98,7 @@ export function computeRelationshipSuggestions(db) {
       if (cand.id === child.id) return;
       if (cand.gender !== "male") return;
       if (!guesses.includes((cand.firstName || "").toLowerCase())) return;
+      if (dismissed.has(`${child.id}:${cand.id}`)) return;
       const alreadyRelated = state.relationships.some((r) => (r.a === child.id && r.b === cand.id) || (r.a === cand.id && r.b === child.id));
       if (alreadyRelated) return;
       const result = scoreCandidate(child, cand, db);

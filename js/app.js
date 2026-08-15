@@ -384,26 +384,41 @@ function originCard(o) {
   const cls = o.side.includes("отца") ? "side-father" : o.side.includes("матери") ? "side-mother" : "side-other";
   const key = stripGenderSuffix(o.surname).toLowerCase();
   const slotId = `surname-ai-${key.replace(/[^a-zа-я]/gi, "")}`;
+  const editSlotId = `surname-edit-${key.replace(/[^a-zа-я]/gi, "")}`;
   const members = DB.get().persons.filter((p) => stripGenderSuffix(p.lastName).toLowerCase() === key)
     .sort((a, b) => (birthYear(a) || 9999) - (birthYear(b) || 9999));
   const verified = DB.isSurnameVerified(key);
+  const override = DB.surnameOverride(key);
+  const displayText = override ? override.origin : o.origin;
   return `
     <div class="origin-card ${cls}">
       <div class="side-tag">${esc(o.side)} ${verified ? `<span class="verified-tag">✓ подтверждено Мариной</span>` : ""}</div>
       <div class="surname">${esc(o.surname)}</div>
-      <p>${esc(o.origin)}</p>
-      ${o.note ? `<p class="muted" style="font-size:0.85rem">${esc(o.note)}</p>` : ""}
-      ${!verified && (o.auto || o.uncertain) ? (o.auto ? `<span class="uncertain-tag auto-tag">⚙ автоматически по общим правилам, не проверено</span>` : `<span class="uncertain-tag">версия не окончательная</span>`) : ""}
+      <p id="surname-text-${key.replace(/[^a-zа-я]/gi, "")}">${esc(displayText)}</p>
+      ${!override && o.note ? `<p class="muted" style="font-size:0.85rem">${esc(o.note)}</p>` : ""}
+      ${!verified && !override && (o.auto || o.uncertain) ? (o.auto ? `<span class="uncertain-tag auto-tag">⚙ автоматически по общим правилам, не проверено</span>` : `<span class="uncertain-tag">версия не окончательная</span>`) : ""}
       ${DB.hasSession() ? `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-small" data-action="ai-surname" data-surname="${esc(o.surname)}" data-slot="${slotId}">🤖 Уточнить через ИИ</button>
-        <button class="btn btn-small ${verified ? "btn-danger" : "btn-primary"}" data-action="toggle-surname-verified" data-key="${esc(key)}" data-verified="${verified ? "0" : "1"}">${verified ? "Снять подтверждение" : "✓ Подтвердить информацию"}</button>
+        <button class="btn btn-small" data-action="ai-surname" data-surname="${esc(o.surname)}" data-slot="${slotId}" data-key="${esc(key)}">🤖 Уточнить через ИИ</button>
+        <button class="btn btn-small" data-action="edit-surname-open" data-key="${esc(key)}" data-slot="${editSlotId}">✎ Редактировать</button>
       </div>` : ""}
+      <div id="${editSlotId}"></div>
       <div id="${slotId}"></div>
       ${members.length ? `<details class="surname-members"><summary>В дереве: ${members.length} ${ruPlural(members.length, ["человек", "человека", "человек"])}</summary>
         <ul class="note-list" style="margin-top:8px">${members.map((m) => `<li style="padding:6px 0"><a href="#/person/${m.id}">${esc(fullName(m))}</a> <span class="muted-small">${esc(shortDates(m))}</span></li>`).join("")}</ul>
       </details>` : ""}
     </div>
   `;
+}
+
+function surnameEditForm(key, currentText, slotId) {
+  return `
+    <form data-form="edit-surname" data-key="${esc(key)}" data-slot="${esc(slotId)}" style="margin-top:10px">
+      <textarea class="input" name="origin" rows="4">${esc(currentText)}</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-small btn-primary" type="submit">Сохранить как подтверждённую версию</button>
+        <button class="btn btn-small" type="button" data-action="edit-surname-close" data-slot="${esc(slotId)}">Отмена</button>
+      </div>
+    </form>`;
 }
 
 // собираем фамилии, которых нет в кураторском списке (window.SURNAME_ORIGINS),
@@ -1778,7 +1793,7 @@ function adminAiTab() {
               <div class="muted-small">${esc(s.reason)}</div>
               <div style="margin-top:6px;display:flex;gap:8px">
                 <button class="btn btn-small btn-primary" data-action="confirm-suggestion" data-child="${s.childId}" data-candidate="${s.candidateId}">Подтвердить связь</button>
-                <button class="btn btn-small" data-action="dismiss-suggestion" data-row="${i}">Отклонить</button>
+                <button class="btn btn-small btn-danger" data-action="dismiss-suggestion" data-child="${s.childId}" data-candidate="${s.candidateId}" data-row="${i}">Отклонить</button>
               </div>
             </li>`).join("")}
         </ul>`}
@@ -1811,7 +1826,16 @@ function render() {
   else if (view === "scheme") { inner = viewScheme(); after = initSchemeInteraction; }
   else if (view === "investigation") inner = viewInvestigation();
   else if (view === "chronicle") inner = viewChronicle();
-  else if (view === "timeline") inner = viewTimeline();
+  else if (view === "timeline") {
+    const prevWrap = document.querySelector(".timeline-wrap");
+    const savedScroll = prevWrap ? prevWrap.scrollLeft : null;
+    inner = viewTimeline();
+    after = () => {
+      if (savedScroll === null) return;
+      const wrap = document.querySelector(".timeline-wrap");
+      if (wrap) wrap.scrollLeft = savedScroll;
+    };
+  }
   else if (view === "dates") inner = viewDates();
   else if (view === "people") inner = viewPeople();
   else if (view === "person") inner = viewPerson(id);
@@ -1902,8 +1926,10 @@ document.addEventListener("click", (e) => {
     });
   }
   if (action === "dismiss-suggestion") {
-    const row = document.querySelector(`[data-suggestion-row="${btn.dataset.row}"]`);
-    if (row) row.remove();
+    guarded(async () => {
+      await DB.dismissSuggestion(btn.dataset.child, btn.dataset.candidate);
+      toast("Подсказка отклонена — больше не будет предложена.");
+    });
   }
 
   if (action === "toggle-gaps") { window.__showGaps = !window.__showGaps; render(); }
@@ -2090,11 +2116,13 @@ document.addEventListener("click", (e) => {
   }
 
   if (action === "ai-surname") {
-    const surname = btn.dataset.surname, slotId = btn.dataset.slot;
+    const surname = btn.dataset.surname, slotId = btn.dataset.slot, key = btn.dataset.key;
     const slot = document.getElementById(slotId);
     btn.disabled = true; btn.textContent = "Спрашиваем ИИ…";
     const members = DB.get().persons.filter((p) => stripGenderSuffix(p.lastName).toLowerCase() === stripGenderSuffix(surname).toLowerCase()).map(fullName).join(", ");
     DB.aiSurname(surname, members).then((r) => {
+      window.__lastSurnameAi = window.__lastSurnameAi || {};
+      window.__lastSurnameAi[key] = r.etymology || "";
       slot.innerHTML = `
         <div class="ai-result">
           <p>${esc(r.etymology || "")}</p>
@@ -2103,9 +2131,27 @@ document.addEventListener("click", (e) => {
           ${r.regions ? `<p class="muted-small">Регионы: ${esc(r.regions)}</p>` : ""}
           ${r.additionalNotes ? `<p class="muted-small">${esc(r.additionalNotes)}</p>` : ""}
           <p class="uncertain-tag auto-tag" style="display:inline-block">${esc(r.disclaimer || "Общие сведения об ономастике, не доказанная история семьи")}</p>
+          <div style="margin-top:8px"><button class="btn btn-small btn-primary" data-action="confirm-surname-ai" data-key="${esc(key)}">✓ Подтвердить эту версию</button></div>
         </div>`;
     }).catch((err) => { slot.innerHTML = aiErrorBox(err); })
       .finally(() => { btn.disabled = false; btn.textContent = "🤖 Уточнить через ИИ"; });
+  }
+
+  if (action === "confirm-surname-ai") {
+    const key = btn.dataset.key;
+    const text = (window.__lastSurnameAi || {})[key];
+    if (!text) return;
+    guarded(async () => { await DB.saveSurnameText(key, text); toast("Версия ИИ сохранена как подтверждённая."); });
+  }
+
+  if (action === "edit-surname-open") {
+    const key = btn.dataset.key, slotId = btn.dataset.slot;
+    const current = DB.surnameOverride(key)?.origin || (window.SURNAME_ORIGINS.find((o) => stripGenderSuffix(o.surname).toLowerCase() === key)?.origin) || "";
+    document.getElementById(slotId).innerHTML = surnameEditForm(key, current, slotId);
+  }
+  if (action === "edit-surname-close") {
+    const el = document.getElementById(btn.dataset.slot);
+    if (el) el.innerHTML = "";
   }
 });
 
@@ -2184,6 +2230,9 @@ document.addEventListener("submit", (e) => {
   if (!form.matches("[data-form]")) return;
   e.preventDefault();
   const kind = form.dataset.form;
+  formDirty = false; // отправка формы — это и есть намеренное завершение ввода;
+  // иначе гейт на формDirty (защита от затирания форм фоновым опросом)
+  // блокирует легитимную перерисовку после собственного же сохранения
 
   if (kind === "admin-login") {
     withSubmitLoading(form, "Входим…", () => DB.checkPassword(form.password.value).then((ok) => {
@@ -2264,6 +2313,17 @@ document.addEventListener("submit", (e) => {
     withSubmitLoading(form, "…", () => guarded(async () => {
       await DB.updateRelationship(relId, { marriageDate: { mode: "exact", exact: value } });
       toast("Дата свадьбы сохранена.");
+    }));
+  }
+
+  if (kind === "edit-surname") {
+    const key = form.dataset.key, slotId = form.dataset.slot;
+    const text = form.origin.value.trim();
+    withSubmitLoading(form, "Сохраняем…", () => guarded(async () => {
+      await DB.saveSurnameText(key, text);
+      const el = document.getElementById(slotId);
+      if (el) el.innerHTML = "";
+      toast("Сохранено как подтверждённая версия.");
     }));
   }
 });

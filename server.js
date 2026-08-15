@@ -31,7 +31,7 @@ const MIME = {
 };
 
 function emptyOverlay() {
-  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [], surnameVerifications: {}, chronicle: null };
+  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [], surnameVerifications: {}, surnameOverrides: {}, dismissedSuggestions: [], chronicle: null };
 }
 
 function ensureOverlay() {
@@ -223,6 +223,33 @@ const server = http.createServer((req, res) => {
       const key = decodeURIComponent(surnameMatch[1]);
       if (body.verified) overlay.surnameVerifications[key] = { verifiedAt: new Date().toISOString() };
       else delete overlay.surnameVerifications[key];
+      writeOverlay(overlay);
+      sendJSON(res, 200, { overlay });
+    });
+  }
+  // сохранение/редактирование самого текста о фамилии (подтверждение версии
+  // ИИ или ручная правка Марины — технически одно и то же действие: текст,
+  // который теперь считается официальным для этой фамилии)
+  const surnameTextMatch = p.match(/^\/api\/surname\/([^/]+)\/text$/);
+  if (surnameTextMatch && req.method === "PUT") {
+    return readBody(req, (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      const overlay = readOverlay();
+      const key = decodeURIComponent(surnameTextMatch[1]);
+      overlay.surnameOverrides[key] = { origin: body.origin || "", updatedAt: new Date().toISOString() };
+      overlay.surnameVerifications[key] = { verifiedAt: new Date().toISOString() };
+      writeOverlay(overlay);
+      sendJSON(res, 200, { overlay });
+    });
+  }
+
+  // ------------------------------------------------------- отклонение подсказки связи
+  if (p === "/api/dismiss-suggestion" && req.method === "POST") {
+    return readBody(req, (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      const overlay = readOverlay();
+      const key = `${body.childId}:${body.candidateId}`;
+      if (!overlay.dismissedSuggestions.includes(key)) overlay.dismissedSuggestions.push(key);
       writeOverlay(overlay);
       sendJSON(res, 200, { overlay });
     });

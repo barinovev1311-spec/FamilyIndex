@@ -11,6 +11,12 @@ let aiConfigured = false;
 const listeners = new Set();
 let password = null; // хранится только в памяти вкладки, не в localStorage
 
+// счётчик локальных мутаций — нужен, чтобы фоновый опрос (см. ниже) не
+// мог откатить только что сохранённые изменения, если его ответ придёт
+// уже ПОСЛЕ того, как мы сами что-то сохранили (гонка состояний: опрос
+// стартовал раньше нашего сохранения, но пришёл позже него).
+let mutationVersion = 0;
+
 function buildState() {
   if (!seed || !overlay) return { persons: [], relationships: [], marinaId: null, husbandId: null, researchNotes: {} };
   const persons = [...seed.persons, ...overlay.addedPersons]
@@ -37,6 +43,9 @@ async function api(path, method, body) {
     e.code = err.error;
     throw e;
   }
+  // любой не-GET запрос — это наша собственная мутация; отмечаем версию,
+  // чтобы догоняющий фоновый опрос её не затёр (см. refreshOverlay)
+  if (method !== "GET") mutationVersion++;
   return res.json();
 }
 
@@ -50,8 +59,10 @@ async function loadInitial() {
 }
 
 async function refreshOverlay() {
+  const versionAtStart = mutationVersion;
   try {
     const data = await api("/api/state", "GET");
+    if (mutationVersion !== versionAtStart) return; // за время опроса мы сами что-то сохранили — не затираем
     const changed = JSON.stringify(data.overlay) !== JSON.stringify(overlay);
     seed = data.seed;
     overlay = data.overlay;
@@ -175,6 +186,18 @@ export const DB = {
     listeners.forEach((fn) => fn());
   },
   isSurnameVerified(surnameKey) { return !!overlay?.surnameVerifications?.[surnameKey]; },
+  async saveSurnameText(surnameKey, origin) {
+    const r = await api(`/api/surname/${encodeURIComponent(surnameKey)}/text`, "PUT", { password, origin });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+  },
+  surnameOverride(surnameKey) { return overlay?.surnameOverrides?.[surnameKey] || null; },
+  async dismissSuggestion(childId, candidateId) {
+    const r = await api("/api/dismiss-suggestion", "POST", { password, childId, candidateId });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+  },
+  dismissedSuggestionKeys() { return new Set(overlay?.dismissedSuggestions || []); },
   async aiHistoricalContext(personId, yearFrom, yearTo) { return api("/api/ai/historical-context", "POST", { password, personId, yearFrom, yearTo }); },
   async aiAnalyzeBranch(branchLabel, personIds) { return api("/api/ai/analyze-branch", "POST", { password, branchLabel, personIds }); },
   async aiAnalyzeTree(stats, topGaps) { return api("/api/ai/analyze-tree", "POST", { password, stats, topGaps }); },
