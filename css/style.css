@@ -423,6 +423,9 @@ textarea.input { resize: vertical; }
 .gap-dot.gap-gold { background: var(--gold); box-shadow: 0 0 10px var(--gold); }
 .gap-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .ai-result { margin-top: 10px; padding: 12px; background: var(--bg-soft); border-radius: var(--radius-sm); border: 1px dashed var(--line-bright); }
+.ai-result-wrap { position: relative; margin-top: 10px; padding: 16px 34px 16px 16px; background: var(--bg-soft); border-radius: var(--radius); border: 1px dashed var(--line-bright); }
+.ai-result-close { position: absolute; top: 10px; right: 10px; background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 0.9rem; padding: 4px; line-height: 1; }
+.ai-result-close:hover { color: var(--ink); }
 
 /* ------------------------------------------------------------------- notes */
 
@@ -469,32 +472,21 @@ textarea.input { resize: vertical; }
 .history-event.scope-country .history-card strong { color: var(--gold); }
 .history-event.scope-region .history-card strong { color: var(--teal); }
 
-.geo-map-wrap { border: 1px solid var(--line); border-radius: var(--radius); background: radial-gradient(ellipse at center, rgba(139,108,247,0.08), transparent 70%); overflow: auto; }
-.geo-map { display: block; width: 100%; height: auto; min-width: 760px; }
+.history-event.scope-region .history-card strong { color: var(--teal); }
 
-.geo-frame { fill: none; stroke: var(--line-bright); stroke-width: 1.5; }
-.geo-frame-inner { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 4 5; }
-.geo-contour { fill: none; stroke: var(--line); stroke-width: 1; opacity: 0.35; }
-.geo-river { fill: none; stroke: var(--teal); stroke-width: 2.5; opacity: 0.22; }
-.geo-river-thin { stroke-width: 1.4; opacity: 0.16; }
-.geo-compass circle { fill: none; stroke: var(--line-bright); stroke-width: 1; }
-.geo-compass line { stroke: var(--line-bright); stroke-width: 1; }
-.geo-compass text { font-family: var(--font-mono); font-size: 10px; fill: var(--ink-faint); }
+/* ------------------------------------------------------- настоящая карта */
 
-.geo-node { cursor: pointer; }
-.geo-node .geo-halo { fill: currentColor; opacity: 0.06; }
-.geo-node .geo-ring { fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.35; }
-.geo-node .geo-dot { fill: var(--bg-elevated); stroke: var(--teal); stroke-width: 2; filter: drop-shadow(0 0 6px currentColor); transition: r 0.15s; }
-.geo-node.status-vanished { color: var(--coral); }
-.geo-node.status-vanished .geo-dot { stroke: var(--coral); stroke-dasharray: 3 3; }
-.geo-node.status-existing { color: var(--teal); }
-.geo-node.status-existing .geo-dot { stroke: var(--teal); }
-.geo-node.status-unknown { color: var(--ink-faint); }
-.geo-node.status-unknown .geo-dot { stroke: var(--ink-faint); }
-.geo-node:hover .geo-dot { stroke-width: 3; }
-.geo-label { font-family: var(--font-body); font-weight: 700; font-size: 11px; fill: var(--ink); }
-.geo-count { font-family: var(--font-mono); font-size: 10px; fill: var(--ink-soft); }
-.geo-migration { stroke: var(--gold); stroke-width: 1.3; stroke-dasharray: 2 5; opacity: 0.5; fill: none; }
+.geo-leaflet { height: 560px; border-radius: var(--radius); border: 1px solid var(--line); overflow: hidden; }
+.home-map-section .geo-leaflet, .home-leaflet { height: 420px; border-radius: var(--radius); border: 1px solid var(--line); overflow: hidden; }
+.geo-empty { padding: 40px 20px; text-align: center; color: var(--ink-faint); }
+/* тёмная тема поверх стандартных leaflet-элементов управления */
+.leaflet-container { background: var(--bg) !important; font-family: var(--font-body) !important; }
+.leaflet-control-zoom a { background: var(--bg-elevated) !important; color: var(--ink) !important; border-color: var(--line) !important; }
+.leaflet-control-zoom a:hover { background: var(--bg-soft) !important; }
+.leaflet-control-attribution { background: rgba(18,20,43,0.75) !important; color: var(--ink-faint) !important; }
+.leaflet-control-attribution a { color: var(--teal) !important; }
+.geo-tooltip { background: var(--bg-elevated) !important; border: 1px solid var(--line-bright) !important; color: var(--ink) !important; font-family: var(--font-body) !important; border-radius: 8px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.4) !important; }
+.geo-tooltip::before { display: none !important; }
 
 .verified-tag { font-family: var(--font-mono); font-size: 0.68rem; color: var(--teal); background: var(--teal-soft); padding: 1px 8px; border-radius: 10px; margin-left: 6px; }
 
@@ -540,3 +532,26 @@ textarea.input { resize: vertical; }
 .quest-task-title { font-weight: 700; font-size: 0.92rem; }
 .quest-task-sub { font-size: 0.78rem; color: var(--ink-faint); }
 .quest-task-points { font-family: var(--font-mono); font-size: 0.82rem; color: var(--gold); font-weight: 700; white-space: nowrap; }
+
+/* ------------------------------------------------------- homepage: новое */
+
+.today-list .calendar-row { border-left: 3px solid var(--gold); }
+.today-list .calendar-row .cal-day { color: var(--gold); font-size: 1.3rem; }
+
+.photo-mosaic { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+.mosaic-tile { display: block; aspect-ratio: 1; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--line); transition: transform 0.15s, border-color 0.15s; }
+.mosaic-tile:hover { transform: scale(1.04); border-color: var(--teal); }
+.mosaic-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.quick-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.quick-tile { display: flex; flex-direction: column; gap: 6px; padding: 22px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); transition: transform 0.15s, border-color 0.15s; }
+.quick-tile:hover { transform: translateY(-3px); border-color: var(--violet); text-decoration: none; }
+.quick-tile-icon { font-size: 1.8rem; }
+.quick-tile strong { font-family: var(--font-display); font-size: 1.1rem; }
+
+.activity-feed { display: flex; flex-direction: column; gap: 2px; }
+.activity-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--radius-sm); color: var(--ink); transition: background 0.15s; }
+.activity-row:hover { background: var(--bg-soft); text-decoration: none; }
+.activity-icon { font-size: 1.15rem; flex-shrink: 0; }
+.activity-text { flex: 1; font-size: 0.9rem; }
+.activity-time { white-space: nowrap; }

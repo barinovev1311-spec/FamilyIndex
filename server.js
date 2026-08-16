@@ -283,6 +283,35 @@ const server = http.createServer((req, res) => {
     });
   }
 
+  // пакетное начисление — одним запросом вместо N, чтобы шкала прогресса
+  // не «скакала» по мере того, как приходят отдельные ответы вразнобой
+  if (p === "/api/quest/complete-batch" && req.method === "POST") {
+    return readBody(req, (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      const overlay = readOverlay();
+      if (!overlay.quest) overlay.quest = { totalPoints: 0, completedTaskIds: [], streak: { lastActiveDate: null, count: 0 } };
+      const tasks = Array.isArray(body.tasks) ? body.tasks : [];
+      let awardedCount = 0, awardedPoints = 0;
+      tasks.forEach((t) => {
+        if (!t || !t.taskId || overlay.quest.completedTaskIds.includes(t.taskId)) return;
+        overlay.quest.completedTaskIds.push(t.taskId);
+        overlay.quest.totalPoints += Number(t.points) || 0;
+        awardedCount++; awardedPoints += Number(t.points) || 0;
+      });
+      if (awardedCount > 0) {
+        const today = new Date().toISOString().slice(0, 10);
+        const last = overlay.quest.streak.lastActiveDate;
+        if (last !== today) {
+          const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+          overlay.quest.streak.count = last === yesterday ? overlay.quest.streak.count + 1 : 1;
+          overlay.quest.streak.lastActiveDate = today;
+        }
+        writeOverlay(overlay);
+      }
+      sendJSON(res, 200, { overlay, awardedCount, awardedPoints });
+    });
+  }
+
   // ---------------------------------------------------------------- заметки
   if (p === "/api/note" && req.method === "POST") {
     return readBody(req, (err, body) => {

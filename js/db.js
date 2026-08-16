@@ -199,6 +199,28 @@ export const DB = {
   },
   dismissedSuggestionKeys() { return new Set(overlay?.dismissedSuggestions || []); },
 
+  // ------------------------------------------------------ лента активности
+  // объединяет разные источники с датами (новые люди, заметки, кандидаты)
+  // в единую ленту «что нового» для главной страницы
+  recentActivity(limit = 6) {
+    if (!overlay) return [];
+    const items = [];
+    (overlay.addedPersons || []).forEach((p) => {
+      if (!p.createdAt) return;
+      items.push({ at: p.createdAt, kind: "person", text: `Добавлен человек: ${[p.lastName, p.firstName].filter(Boolean).join(" ")}`, href: `#/person/${p.id}` });
+    });
+    (overlay.notes || []).forEach((n) => {
+      items.push({ at: n.createdAt, kind: "note", text: "Добавлена заметка", href: n.targetType === "person" ? `#/person/${n.targetId}` : "#/investigation" });
+    });
+    (overlay.candidates || []).forEach((c) => {
+      items.push({ at: c.createdAt, kind: "candidate", text: `Найден возможный родственник: ${c.name}`, href: "#/investigation" });
+    });
+    if (overlay.chronicle?.generatedAt) {
+      items.push({ at: overlay.chronicle.generatedAt, kind: "chronicle", text: "Обновлена летопись рода", href: "#/chronicle" });
+    }
+    return items.filter((i) => i.at).sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+  },
+
   // -------------------------------------------------------------- задания
   questState() { return overlay?.quest || { totalPoints: 0, completedTaskIds: [], streak: { lastActiveDate: null, count: 0 } }; },
   async awardTask(taskId, points) {
@@ -206,6 +228,13 @@ export const DB = {
     overlay = r.overlay;
     listeners.forEach((fn) => fn());
     return r.awarded;
+  },
+  async awardTasksBatch(tasks) {
+    if (!tasks.length) return 0;
+    const r = await api("/api/quest/complete-batch", "POST", { password, tasks });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+    return r.awardedPoints;
   },
   async aiHistoricalContext(personId, yearFrom, yearTo) { return api("/api/ai/historical-context", "POST", { password, personId, yearFrom, yearTo }); },
   async aiAnalyzeBranch(branchLabel, personIds) { return api("/api/ai/analyze-branch", "POST", { password, branchLabel, personIds }); },

@@ -104,8 +104,14 @@ document.addEventListener("input", (e) => {
   if (e.target.closest && e.target.closest("[data-form]")) formDirty = true;
 });
 
+// то же самое для открытых подсказок ИИ: результат ИИ показывается один
+// раз по явному клику и должен оставаться на экране, пока пользователь
+// сам его не закроет — фоновое обновление не должно его стирать.
+// Открывать/закрывать может только пользователь (см. aiResultBlock ниже).
+const aiOpenSlots = new Set();
+
 window.addEventListener("hashchange", render);
-DB.onChange(() => { if (!formDirty) render(); });
+DB.onChange(() => { if (!formDirty && aiOpenSlots.size === 0) render(); });
 
 const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["investigation", "Расследование"], ["chronicle", "Летопись"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
 
@@ -316,7 +322,7 @@ function featuredPersonBlock() {
         <span class="eyebrow">Сегодня вспомним</span>
         <h3>${esc(fullName(p))}</h3>
         <p class="muted-small">${esc(shortDates(p))} · ${esc(p._meta.relationToMarina)}</p>
-        ${p.bio ? `<p class="muted-small">${esc(p.bio.slice(0, 220))}${p.bio.length > 220 ? "…" : ""}</p>` : ""}
+        ${p.occupation ? `<p class="muted-small">${esc(p.occupation)}</p>` : ""}
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
           <a class="btn btn-small" href="#/person/${p.id}">Открыть карточку</a>
           <a class="btn btn-small" href="#/scheme" data-action="show-in-tree" data-id="${p.id}">Показать в дереве</a>
@@ -325,6 +331,73 @@ function featuredPersonBlock() {
         <div id="featured-insight-slot"></div>
       </div>
     </div>`;
+}
+
+function relativeTimeRu(iso) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "только что";
+  if (mins < 60) return `${mins} ${ruPlural(mins, ["минуту", "минуты", "минут"])} назад`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} ${ruPlural(hours, ["час", "часа", "часов"])} назад`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} ${ruPlural(days, ["день", "дня", "дней"])} назад`;
+  return new Date(iso).toLocaleDateString("ru-RU");
+}
+
+const ACTIVITY_ICONS = { person: "👤", note: "📝", candidate: "🔎", chronicle: "📜" };
+
+function recentActivityFeed() {
+  const items = DB.recentActivity(6);
+  if (items.length === 0) return "";
+  return `
+    <section class="block">
+      <div class="block-inner">
+        <div class="block-head"><span class="eyebrow">Живой архив</span><h2>Недавно в архиве</h2></div>
+        <div class="activity-feed">
+          ${items.map((i) => `<a class="activity-row" href="${i.href}">
+            <span class="activity-icon">${ACTIVITY_ICONS[i.kind] || "•"}</span>
+            <span class="activity-text">${esc(i.text)}</span>
+            <span class="activity-time muted-small">${esc(relativeTimeRu(i.at))}</span>
+          </a>`).join("")}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function photoMosaic() {
+  const persons = DB.get().persons;
+  const withPhotos = persons.filter((p) => personPhotos(p).length > 0);
+  return `
+    <section class="block tinted">
+      <div class="block-inner">
+        <div class="block-head"><span class="eyebrow">Лица рода</span><h2>${withPhotos.length > 0 ? `${withPhotos.length} ${ruPlural(withPhotos.length, ["человек", "человека", "человек"])} с фотографией в архиве` : "Пока без фотографий"}</h2></div>
+        ${withPhotos.length > 0
+          ? `<div class="photo-mosaic">${withPhotos.slice(0, 12).map((p) => `<a class="mosaic-tile" href="#/person/${p.id}" title="${esc(fullName(p))}"><img src="${personPhotos(p)[0]}" alt="${esc(fullName(p))}" loading="lazy"></a>`).join("")}</div>`
+          : `<p class="muted">Как только в карточках появятся фотографии, здесь сложится живая мозаика лиц рода.</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function quickAccessTiles() {
+  const tiles = [
+    { href: "#/chronicle", icon: "📜", title: "Летопись", desc: "Связный рассказ о роде от истоков до наших дней" },
+    { href: "#/scheme", icon: "🕸️", title: "Схема родства", desc: "Наглядная карта связей между всеми известными родственниками" },
+    { href: "#/investigation", icon: "🔎", title: "Расследование", desc: "Потенциальные родственники, которых ещё предстоит подтвердить" },
+    { href: "#/timeline", icon: "🕰️", title: "Хронология", desc: "Жизни семьи на фоне истории страны" },
+  ];
+  return `
+    <section class="block">
+      <div class="block-inner">
+        <div class="block-head"><span class="eyebrow">Куда заглянуть</span><h2>Разделы архива</h2></div>
+        <div class="quick-tiles">
+          ${tiles.map((t) => `<a class="quick-tile" href="${t.href}"><span class="quick-tile-icon">${t.icon}</span><strong>${esc(t.title)}</strong><span class="muted-small">${esc(t.desc)}</span></a>`).join("")}
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function viewHome() {
@@ -352,13 +425,25 @@ function viewHome() {
       </div>
     </section>
 
+    <section class="block home-map-section">
+      <div class="block-inner">
+        <div class="block-head"><span class="eyebrow">Настоящая карта</span><h2>Где жил род</h2>
+        <p class="lede">Каждая точка — реальное место на карте, с реальными координатами. Нажмите, чтобы увеличить и посмотреть подробнее на странице «География».</p></div>
+        <div id="home-leaflet-map" class="geo-leaflet"></div>
+        <p style="margin-top:12px"><a href="#/geography">Открыть карту на весь экран →</a></p>
+      </div>
+    </section>
+
     <section class="block">
       <div class="block-inner">
         <div class="block-head"><span class="eyebrow">Живая лента</span><h2>Сегодня в семье</h2></div>
-        ${today.length === 0 ? `<p class="muted">Ближайшие 3 дня — без дат рождения, памяти или свадеб в архиве.</p>` : `<div class="calendar-list">${today.map(todayEventRow).join("")}</div>`}
+        ${today.length === 0 ? `<p class="muted">Ближайшие 3 дня — без дат рождения, памяти или свадеб в архиве.</p>` : `<div class="calendar-list today-list">${today.map(todayEventRow).join("")}</div>`}
         ${featuredPersonBlock()}
       </div>
     </section>
+
+    ${photoMosaic()}
+    ${quickAccessTiles()}
 
     <section class="block tinted">
       <div class="block-inner">
@@ -367,6 +452,8 @@ function viewHome() {
         <p style="margin-top:22px"><a href="#/origins">Читать про все фамилии рода →</a></p>
       </div>
     </section>
+
+    ${recentActivityFeed()}
 
     <section class="block">
       <div class="block-inner">
@@ -637,78 +724,75 @@ function collectPlaceData() {
   return { list, migrations };
 }
 
-function layoutPlaces(list, w, h) {
-  const cx = w / 2, cy = h / 2;
-  const positions = new Map();
-  list.forEach((place, i) => {
-    if (i === 0) { positions.set(place.name, { x: cx, y: cy }); return; }
-    const angle = i * 137.508 * (Math.PI / 180);
-    const radius = 36 + Math.sqrt(i) * 40;
-    positions.set(place.name, { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) * 0.62 });
-  });
-  return positions;
-}
-
 function placeStatusOf(name) {
   const curated = window.FAMILY_PLACES.find((pl) => name.includes(pl.name.replace(/^д\.\s*|^г\.\s*/, "")) || pl.name.includes(name));
   return curated ? curated.status : "unknown";
 }
 
-function geographyMapSVG() {
-  const { list, migrations } = collectPlaceData();
-  if (list.length === 0) return `<p class="muted">Пока нет мест — заполните «Место рождения» у людей в архиве.</p>`;
-  const w = 960, h = 660;
-  const positions = layoutPlaces(list, w, h);
-  const maxCount = list[0].people.length;
+// -------------------------------------------------------------- настоящая карта (Leaflet)
 
-  let svg = `<svg class="geo-map" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Карта мест рода, по количеству связанных людей">`;
+const activeLeafletMaps = {};
 
-  // -------- декоративная подложка «под карту»: рамка, реки, рельеф, компас
-  svg += `<rect class="geo-frame" x="8" y="8" width="${w - 16}" height="${h - 16}" rx="10" />`;
-  svg += `<rect class="geo-frame-inner" x="18" y="18" width="${w - 36}" height="${h - 36}" rx="6" />`;
-  // контурные "рельефные" линии — просто декоративная текстура местности
-  for (let i = 0; i < 5; i++) {
-    const yOff = 90 + i * 110;
-    svg += `<path class="geo-contour" d="M -20 ${yOff} Q ${w * 0.25} ${yOff - 40 - i * 6}, ${w * 0.5} ${yOff} T ${w + 20} ${yOff}" />`;
+function initLeafletMap(containerId, opts = {}) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (typeof L === "undefined") {
+    el.innerHTML = `<div class="geo-empty">Не удалось загрузить карту (библиотека Leaflet не подключилась) — проверьте подключение к интернету и обновите страницу.</div>`;
+    return;
   }
-  // декоративные реки — несколько плавных кривых через всё полотно
-  svg += `<path class="geo-river" d="M -10 ${h * 0.15} C ${w * 0.2} ${h * 0.3}, ${w * 0.35} ${h * 0.1}, ${w * 0.55} ${h * 0.35} S ${w * 0.85} ${h * 0.55}, ${w + 10} ${h * 0.45}" />`;
-  svg += `<path class="geo-river geo-river-thin" d="M ${w * 0.1} -10 C ${w * 0.25} ${h * 0.25}, ${w * 0.15} ${h * 0.5}, ${w * 0.4} ${h * 0.7} S ${w * 0.6} ${h + 10}, ${w * 0.6} ${h + 10}" />`;
-  // компас в углу
-  const cx0 = w - 62, cy0 = 62;
-  svg += `<g class="geo-compass">
-    <circle cx="${cx0}" cy="${cy0}" r="30" />
-    <line x1="${cx0}" y1="${cy0 - 24}" x2="${cx0}" y2="${cy0 + 24}" />
-    <line x1="${cx0 - 24}" y1="${cy0}" x2="${cx0 + 24}" y2="${cy0}" />
-    <text x="${cx0}" y="${cy0 - 30}" text-anchor="middle">С</text>
-    <text x="${cx0}" y="${cy0 + 40}" text-anchor="middle">Ю</text>
-    <text x="${cx0 - 34}" y="${cy0 + 4}" text-anchor="middle">З</text>
-    <text x="${cx0 + 34}" y="${cy0 + 4}" text-anchor="middle">В</text>
-  </g>`;
+  if (activeLeafletMaps[containerId]) { try { activeLeafletMaps[containerId].remove(); } catch (e) { /* контейнер уже заменён перерисовкой */ } delete activeLeafletMaps[containerId]; }
 
-  migrations.forEach((m) => {
-    const a = positions.get(m.from), b = positions.get(m.to);
-    if (!a || !b) return;
-    const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.15, my = (a.y + b.y) / 2 - (b.x - a.x) * 0.15;
-    svg += `<path class="geo-migration" d="M ${a.x} ${a.y} Q ${mx} ${my}, ${b.x} ${b.y}" />`;
+  const { list } = collectPlaceData();
+  const resolved = list.map((place) => ({ place, coords: window.resolvePlaceCoords(place.name) })).filter((x) => x.coords && x.coords.lat != null);
+  const unresolvedCount = list.length - resolved.length;
+
+  if (resolved.length === 0) {
+    el.innerHTML = `<div class="geo-empty">Пока нет мест с известными координатами — заполните «Место рождения» у людей в архиве.</div>`;
+    return;
+  }
+
+  const map = L.map(containerId, {
+    zoomControl: !opts.compact,
+    scrollWheelZoom: !opts.compact,
+    dragging: true,
+    attributionControl: !opts.compact,
   });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    attribution: opts.compact ? "" : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains: "abcd",
+    maxZoom: 18,
+  }).addTo(map);
 
-  list.forEach((place, i) => {
-    const pos = positions.get(place.name);
-    const r = 6 + Math.sqrt(place.people.length / maxCount) * 20;
+  const bounds = [];
+  resolved.forEach(({ place, coords }) => {
+    const radius = 7 + Math.sqrt(place.people.length) * 3.5;
     const status = placeStatusOf(place.name);
-    const showLabel = i < 14 || place.people.length >= 2;
-    const delay = (Math.min(i, 20) * 0.05).toFixed(2);
-    svg += `<g class="geo-node twinkle status-${status}" style="animation-delay:${delay}s" data-action="geo-select-place" data-place="${esc(place.name)}">
-      <circle class="geo-halo" cx="${pos.x}" cy="${pos.y}" r="${r + 10}" />
-      <circle class="geo-ring" cx="${pos.x}" cy="${pos.y}" r="${r + 4}" />
-      <circle class="geo-dot" cx="${pos.x}" cy="${pos.y}" r="${r}" />
-      ${showLabel ? `<text class="geo-label" x="${pos.x}" y="${pos.y - r - 14}" text-anchor="middle">${esc(place.name.length > 28 ? place.name.slice(0, 26) + "…" : place.name)}</text>` : ""}
-      <text class="geo-count" x="${pos.x}" y="${pos.y + 4}" text-anchor="middle">${place.people.length}</text>
-    </g>`;
+    const color = status === "vanished" ? "#ff6b8b" : status === "existing" ? "#2dd4bf" : "#fbbf67";
+    const marker = L.circleMarker([coords.lat, coords.lng], { radius, color, fillColor: color, fillOpacity: 0.4, weight: 2 }).addTo(map);
+    const approxNote = coords.precise ? "" : " · место приблизительное";
+    marker.bindTooltip(`<strong>${esc(place.name)}</strong><br>${place.people.length} ${ruPlural(place.people.length, ["человек", "человека", "человек"])}${approxNote}`, { direction: "top", className: "geo-tooltip", offset: [0, -6] });
+    if (!opts.compact) {
+      marker.on("click", () => {
+        window.__selectedPlace = place.name;
+        const slot = document.getElementById("geo-people-slot");
+        if (slot) slot.innerHTML = placePeoplePanel(place.name);
+      });
+    } else {
+      marker.on("click", () => { location.hash = "#/geography"; });
+    }
+    bounds.push([coords.lat, coords.lng]);
   });
-  svg += `</svg>`;
-  return svg;
+
+  if (bounds.length === 1) map.setView(bounds[0], opts.compact ? 6 : 9);
+  else map.fitBounds(bounds, { padding: opts.compact ? [20, 20] : [50, 50] });
+  if (opts.compact) map.scrollWheelZoom.disable();
+
+  activeLeafletMaps[containerId] = map;
+
+  if (unresolvedCount > 0 && !opts.compact) {
+    const note = document.getElementById("geo-unresolved-note");
+    if (note) note.textContent = `Ещё ${unresolvedCount} ${ruPlural(unresolvedCount, ["место", "места", "мест"])} упомянуто в архиве, но точных координат для ${unresolvedCount === 1 ? "него" : "них"} пока нет.`;
+  }
 }
 
 function placePeoplePanel(placeName) {
@@ -731,8 +815,9 @@ function viewGeography() {
   return `
     <div class="page">
       <div class="page-head"><div><span class="eyebrow">География рода</span><h1>Места, где жила семья</h1>
-      <p class="lede">Каждая точка — место, упомянутое в дереве (размер и цифра — сколько человек с ним связано); линии — переезды между рождением и смертью одного человека. Это не географическая карта с координатами, а условная схема связей. Нажмите на точку, чтобы увидеть, кто там жил.</p></div></div>
-      <div class="geo-map-wrap">${geographyMapSVG()}</div>
+      <p class="lede">Настоящая карта: размер точки — сколько человек связано с этим местом. Бирюзовый — существует сейчас, коралловый — официально исчезла, жёлтый — статус не установлен. Пунктиром на подсказке отмечены места, чьи координаты приблизительные (например, исчезнувшая деревня). Нажмите на точку, чтобы увидеть, кто там жил.</p></div></div>
+      <div id="geo-leaflet-map" class="geo-leaflet"></div>
+      <p class="muted-small" id="geo-unresolved-note" style="margin-top:10px"></p>
       <div id="geo-people-slot">${placePeoplePanel(selectedPlace)}</div>
 
       <div class="block-head" style="margin-top:36px"><span class="eyebrow">Из архивных источников</span><h2>Проверенные места</h2></div>
@@ -922,6 +1007,23 @@ function noteForm(targetType, targetId) {
 function aiErrorBox(err) {
   if (err.code === "ai_not_configured") return `<p class="muted-small" style="color:var(--gold)">ИИ пока не настроен на сервере — нужно задать переменную окружения <code>DEEPSEEK_API_KEY</code>.</p>`;
   return `<p class="muted-small" style="color:var(--coral)">Не удалось получить ответ ИИ: ${esc(err.message)}</p>`;
+}
+
+// начинаем «сеанс» показа результата ИИ в указанном слоте: помечаем слот
+// как открытый (защита от того, что фоновое обновление его сотрёт, пока
+// пользователь не закроет сам) и показываем текст ожидания.
+function aiSlotStart(slotId, loadingText) {
+  aiOpenSlots.add(slotId);
+  const slot = document.getElementById(slotId);
+  if (slot) slot.innerHTML = `<p class="muted-small">🤖 ${esc(loadingText)}</p>`;
+  return slot;
+}
+// показывает финальный результат ИИ с крестиком закрытия — открыть и
+// закрыть теперь может только сам пользователь, не фоновое обновление
+function aiSlotFinish(slotId, innerHtml) {
+  const slot = document.getElementById(slotId);
+  if (!slot) { aiOpenSlots.delete(slotId); return; }
+  slot.innerHTML = `<div class="ai-result-wrap"><button class="ai-result-close" type="button" data-action="close-ai-result" data-slot="${esc(slotId)}" title="Закрыть">✕</button>${innerHtml}</div>`;
 }
 
 function searchStrategiesBlock(personId, gapType, result) {
@@ -1741,36 +1843,38 @@ function personCompleteness(p) {
 // потому что честнее засчитывать реальную работу, а не отметку о ней.
 // Идемпотентно на сервере — можно спокойно вызывать при каждом
 // открытии вкладки.
+let reconcilingQuest = false; // защита от повторного запуска, пока предыдущая сверка ещё не завершилась
+
 function reconcileQuestProgress() {
-  if (!DB.hasSession()) return;
+  if (!DB.hasSession() || reconcilingQuest) return;
   const db = DB.get();
   const quest = DB.questState();
   const credited = new Set(quest.completedTaskIds);
   const toCheck = [];
 
   db.persons.forEach((p) => {
-    if (personPhotos(p).length) toCheck.push({ id: `photo:${p.id}`, points: TASK_TYPES.photo.points });
-    if (p.bio || p.occupation) toCheck.push({ id: `bio:${p.id}`, points: TASK_TYPES.bio.points });
-    if (p.birth && p.birth.mode !== "unknown") toCheck.push({ id: `dates:${p.id}`, points: TASK_TYPES.dates.points });
-    if (p.birthPlace) toCheck.push({ id: `places:${p.id}`, points: TASK_TYPES.places.points });
+    if (personPhotos(p).length) toCheck.push({ taskId: `photo:${p.id}`, points: TASK_TYPES.photo.points });
+    if (p.bio || p.occupation) toCheck.push({ taskId: `bio:${p.id}`, points: TASK_TYPES.bio.points });
+    if (p.birth && p.birth.mode !== "unknown") toCheck.push({ taskId: `dates:${p.id}`, points: TASK_TYPES.dates.points });
+    if (p.birthPlace) toCheck.push({ taskId: `places:${p.id}`, points: TASK_TYPES.places.points });
     const gaps = computeGaps(p, DB);
     const relKinds = new Set(["father", "mother", "parents", "spouse", "children", "siblings"]);
-    if (!gaps.some((g) => relKinds.has(g.type))) toCheck.push({ id: `relatives:${p.id}`, points: TASK_TYPES.relatives.points });
+    if (!gaps.some((g) => relKinds.has(g.type))) toCheck.push({ taskId: `relatives:${p.id}`, points: TASK_TYPES.relatives.points });
   });
   const seenSurnames = new Set();
   db.persons.forEach((p) => {
     const key = stripGenderSuffix(p.lastName || "").toLowerCase();
     if (!key || seenSurnames.has(key)) return;
     seenSurnames.add(key);
-    if (DB.isSurnameVerified(key)) toCheck.push({ id: `surname:${key}`, points: TASK_TYPES.surname.points });
+    if (DB.isSurnameVerified(key)) toCheck.push({ taskId: `surname:${key}`, points: TASK_TYPES.surname.points });
   });
 
-  const fresh = toCheck.filter((t) => !credited.has(t.id));
-  fresh.forEach((t) => {
-    DB.awardTask(t.id, t.points).then((awarded) => {
-      if (awarded) toast(`+${t.points} очков!`);
-    }).catch(() => {});
-  });
+  const fresh = toCheck.filter((t) => !credited.has(t.taskId));
+  if (fresh.length === 0) return;
+  reconcilingQuest = true;
+  DB.awardTasksBatch(fresh).then((points) => {
+    if (points > 0) toast(`+${points} очков!`);
+  }).catch(() => {}).finally(() => { reconcilingQuest = false; });
 }
 
 function taskCard(t, featured) {
@@ -1920,6 +2024,7 @@ function adminBackupTab() {
 
 function render() {
   formDirty = false;
+  aiOpenSlots.clear();
   if (!document.getElementById("route-outlet")) renderShell();
   if (!DB.isReady()) { setOutlet(loadingScreen(), "__loading"); return; }
   const { view, id } = currentRoute();
@@ -1942,9 +2047,9 @@ function render() {
   else if (view === "people") inner = viewPeople();
   else if (view === "person") inner = viewPerson(id);
   else if (view === "origins") inner = viewOrigins();
-  else if (view === "geography") inner = viewGeography();
+  else if (view === "geography") { inner = viewGeography(); after = () => initLeafletMap("geo-leaflet-map"); }
   else if (view === "admin") inner = viewAdmin();
-  else { inner = viewHome(); after = (root) => animateCountUp(root); }
+  else { inner = viewHome(); after = (root) => { animateCountUp(root); initLeafletMap("home-leaflet-map", { compact: true }); }; }
   updateNavActive(view);
   setOutlet(inner, view, () => { if (after) after(document.getElementById("route-outlet")); });
 }
@@ -1996,6 +2101,12 @@ document.addEventListener("click", (e) => {
     if (confirm("Все правки будут удалены для всех посетителей, останутся только исходные данные. Продолжить?")) guarded(() => DB.resetOverlay());
   }
 
+  if (action === "close-ai-result") {
+    aiOpenSlots.delete(btn.dataset.slot);
+    const el = document.getElementById(btn.dataset.slot);
+    if (el) el.innerHTML = "";
+  }
+
   // ------------------------------------------------------ точки расследования
   if (action === "toggle-surname-verified") {
     guarded(() => DB.setSurnameVerified(btn.dataset.key, btn.dataset.verified === "1"));
@@ -2003,21 +2114,23 @@ document.addEventListener("click", (e) => {
 
   if (action === "ai-featured-insight") {
     const personId = btn.dataset.id;
-    const slot = document.getElementById("featured-insight-slot");
+    const slotId = "featured-insight-slot";
+    aiSlotStart(slotId, "Спрашиваем ИИ…");
     btn.disabled = true; btn.textContent = "Спрашиваем ИИ…";
     DB.aiDossier(personId, "narrative").then((d) => {
-      slot.innerHTML = `<p class="muted-small" style="margin-top:10px;white-space:pre-line">🤖 ${esc(d.narrative || d.known || "")}</p>`;
-    }).catch((err) => { slot.innerHTML = `<div style="margin-top:10px">${aiErrorBox(err)}</div>`; })
+      aiSlotFinish(slotId, `<p class="muted-small" style="white-space:pre-line">${esc(d.narrative || d.known || "")}</p>`);
+    }).catch((err) => { aiSlotFinish(slotId, aiErrorBox(err)); })
       .finally(() => { btn.disabled = false; btn.textContent = "🤖 Узнать больше"; });
   }
 
   if (action === "ai-test-connection") {
-    const slot = document.getElementById("ai-test-result");
+    const slotId = "ai-test-result";
+    aiSlotStart(slotId, "Проверяем…");
     btn.disabled = true; btn.textContent = "Проверяем…";
     DB.aiTest().then((r) => {
-      slot.innerHTML = `<p style="color:var(--teal)">✓ Подключение работает. Ответ модели: «${esc(r.reply)}»</p>`;
+      aiSlotFinish(slotId, `<p style="color:var(--teal)">✓ Подключение работает. Ответ модели: «${esc(r.reply)}»</p>`);
     }).catch((err) => {
-      slot.innerHTML = `<p style="color:var(--coral)">✗ ${esc(err.message)}</p>`;
+      aiSlotFinish(slotId, `<p style="color:var(--coral)">✗ ${esc(err.message)}</p>`);
     }).finally(() => { btn.disabled = false; btn.textContent = "Проверить подключение"; });
   }
 
@@ -2052,11 +2165,11 @@ document.addEventListener("click", (e) => {
 
   if (action === "gap-search") {
     const personId = btn.dataset.id, gapType = btn.dataset.gap;
-    const slot = document.getElementById(`gap-slot-${personId}-${gapType}`);
-    if (slot) slot.innerHTML = `<p class="muted-small">🤖 Спрашиваем ИИ про стратегию поиска…</p>`;
+    const slotId = `gap-slot-${personId}-${gapType}`;
+    aiSlotStart(slotId, "Спрашиваем ИИ про стратегию поиска…");
     DB.aiSearchStrategies(personId).then((result) => {
-      if (slot) slot.innerHTML = searchStrategiesBlock(personId, gapType, result);
-    }).catch((err) => { if (slot) slot.innerHTML = aiErrorBox(err); });
+      aiSlotFinish(slotId, searchStrategiesBlock(personId, gapType, result));
+    }).catch((err) => { aiSlotFinish(slotId, aiErrorBox(err)); });
   }
 
   if (action === "open-candidate-form") {
@@ -2171,39 +2284,40 @@ document.addEventListener("click", (e) => {
     const db = DB.get();
     const geo = buildSchemeGeometry(root, db);
     const personIds = [...geo.positions.keys()];
-    const slot = document.getElementById("branch-analysis-slot");
+    const slotId = "branch-analysis-slot";
+    aiSlotStart(slotId, "Анализируем…");
     btn.disabled = true; btn.textContent = "Анализируем…";
     DB.aiAnalyzeBranch(`Ветвь вокруг ${fullName(root)}`, personIds).then((r) => {
-      slot.innerHTML = `
-        <div class="panel">
-          <h4 class="eyebrow">🤖 Анализ ветви: ${esc(fullName(root))}</h4>
+      aiSlotFinish(slotId, `
+          <h4 class="eyebrow">Анализ ветви: ${esc(fullName(root))}</h4>
           <p>${esc(r.summary || "")}</p>
           ${r.priorities && r.priorities.length ? `<ul class="note-list">${r.priorities.map((pr) => `<li style="padding:8px 0"><strong>${esc(pr.title)}</strong><br><span class="muted-small">${esc(pr.reason)}</span></li>`).join("")}</ul>` : ""}
-        </div>`;
-    }).catch((err) => { slot.innerHTML = `<div class="panel">${aiErrorBox(err)}</div>`; })
+      `);
+    }).catch((err) => { aiSlotFinish(slotId, aiErrorBox(err)); })
       .finally(() => { btn.disabled = false; btn.textContent = "🤖 Исследовать эту ветку"; });
   }
 
   if (action === "ai-analyze-tree") {
     const stats = computeTreeStats(DB);
     const byPerson = DB.get().persons.map((p) => ({ p, count: computeGaps(p, DB).length })).filter((x) => x.count > 0).sort((a, b) => b.count - a.count).slice(0, 5).map(({ p, count }) => ({ name: fullName(p), count }));
-    const slot = document.getElementById("tree-analysis-slot");
+    const slotId = "tree-analysis-slot";
+    aiSlotStart(slotId, "Думаем…");
     btn.disabled = true; btn.textContent = "Думаем…";
     DB.aiAnalyzeTree(stats, byPerson).then((r) => {
-      slot.innerHTML = `<div class="ai-result">${esc(r.recommendation || "")}</div>`;
-    }).catch((err) => { slot.innerHTML = aiErrorBox(err); })
+      aiSlotFinish(slotId, `<p>${esc(r.recommendation || "")}</p>`);
+    }).catch((err) => { aiSlotFinish(slotId, aiErrorBox(err)); })
       .finally(() => { btn.disabled = false; btn.textContent = "🤖 Что исследовать в первую очередь"; });
   }
 
   if (action === "ai-dossier") {
     const personId = btn.dataset.id;
-    const slot = document.getElementById("dossier-slot");
+    const slotId = "dossier-slot";
     const narrative = document.getElementById("dossier-narrative-toggle")?.checked;
+    aiSlotStart(slotId, "Собираем…");
     btn.disabled = true; btn.textContent = "Собираем…";
     DB.aiDossier(personId, narrative ? "narrative" : "factual").then((d) => {
-      slot.innerHTML = `
-        <div class="panel">
-          <h4 class="eyebrow">🤖 ${narrative ? "История жизни" : "Досье (по имеющимся данным)"}</h4>
+      aiSlotFinish(slotId, `
+          <h4 class="eyebrow">${narrative ? "История жизни" : "Досье (по имеющимся данным)"}</h4>
           ${d.narrative ? `<p style="white-space:pre-line">${esc(d.narrative)}</p>` : ""}
           ${d.basics ? `<p><strong>Основное:</strong> ${esc(d.basics)}</p>` : ""}
           ${d.parents ? `<p><strong>Родители:</strong> ${esc(d.parents)}</p>` : ""}
@@ -2213,21 +2327,20 @@ document.addEventListener("click", (e) => {
           ${d.events ? `<p><strong>События:</strong> ${esc(d.events)}</p>` : ""}
           ${d.known ? `<p class="muted-small"><strong>Известно точно:</strong> ${esc(d.known)}</p>` : ""}
           ${d.unknown ? `<p class="muted-small"><strong>Остаётся неизвестным:</strong> ${esc(d.unknown)}</p>` : ""}
-        </div>`;
-    }).catch((err) => { slot.innerHTML = `<div class="panel">${aiErrorBox(err)}</div>`; })
+      `);
+    }).catch((err) => { aiSlotFinish(slotId, aiErrorBox(err)); })
       .finally(() => { btn.disabled = false; btn.textContent = "🤖 Создать досье"; });
   }
 
   if (action === "ai-surname") {
     const surname = btn.dataset.surname, slotId = btn.dataset.slot, key = btn.dataset.key;
-    const slot = document.getElementById(slotId);
+    aiSlotStart(slotId, "Спрашиваем ИИ…");
     btn.disabled = true; btn.textContent = "Спрашиваем ИИ…";
     const members = DB.get().persons.filter((p) => stripGenderSuffix(p.lastName).toLowerCase() === stripGenderSuffix(surname).toLowerCase()).map(fullName).join(", ");
     DB.aiSurname(surname, members).then((r) => {
       window.__lastSurnameAi = window.__lastSurnameAi || {};
       window.__lastSurnameAi[key] = r.etymology || "";
-      slot.innerHTML = `
-        <div class="ai-result">
+      aiSlotFinish(slotId, `
           <p>${esc(r.etymology || "")}</p>
           ${r.variants && r.variants.length ? `<p class="muted-small">Варианты написания: ${r.variants.map(esc).join(", ")}</p>` : ""}
           ${r.historicalDistribution ? `<p class="muted-small">${esc(r.historicalDistribution)}</p>` : ""}
@@ -2235,8 +2348,8 @@ document.addEventListener("click", (e) => {
           ${r.additionalNotes ? `<p class="muted-small">${esc(r.additionalNotes)}</p>` : ""}
           <p class="uncertain-tag auto-tag" style="display:inline-block">${esc(r.disclaimer || "Общие сведения об ономастике, не доказанная история семьи")}</p>
           <div style="margin-top:8px"><button class="btn btn-small btn-primary" data-action="confirm-surname-ai" data-key="${esc(key)}">✓ Подтвердить эту версию</button></div>
-        </div>`;
-    }).catch((err) => { slot.innerHTML = aiErrorBox(err); })
+      `);
+    }).catch((err) => { aiSlotFinish(slotId, aiErrorBox(err)); })
       .finally(() => { btn.disabled = false; btn.textContent = "🤖 Уточнить через ИИ"; });
   }
 
