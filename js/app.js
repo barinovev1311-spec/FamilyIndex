@@ -3,7 +3,7 @@ import { DB } from "./db.js";
 import { generationOffsetRelativeTo, relationPathToMarina } from "./relations.js";
 import { computeGaps, GAP_LABELS, STATUS_LABELS, gapStatusColor, computeTreeStats } from "./gaps.js";
 import { computeRelationshipSuggestions } from "./relationship-suggestions.js";
-import { TASK_TYPES, todaysFeaturedType, computeTasks, levelFor, computeBadges } from "./quests.js";
+import { TASK_TYPES, todaysFeaturedType, computeTasks, levelFor, computeBadges, computeArchiveCompletion } from "./quests.js";
 
 const app = document.getElementById("app");
 
@@ -113,20 +113,66 @@ const aiOpenSlots = new Set();
 window.addEventListener("hashchange", render);
 DB.onChange(() => { if (!formDirty && aiOpenSlots.size === 0) render(); });
 
-const NAV = [["home", "Главная"], ["tree", "Дерево"], ["scheme", "Схема"], ["investigation", "Расследование"], ["chronicle", "Летопись"], ["timeline", "Хронология"], ["dates", "Даты"], ["people", "Люди"], ["origins", "Фамилии"], ["geography", "География"], ["admin", "Админка"]];
+const NAV_GROUPS = [
+  { key: "home", label: "Главная", href: "#/home" },
+  { key: "people-group", label: "Люди", items: [
+    ["tree", "Дерево"], ["scheme", "Схема"], ["people", "Список людей"],
+  ] },
+  { key: "time-group", label: "Время", items: [
+    ["timeline", "Хронология"], ["dates", "Даты"],
+  ] },
+  { key: "research-group", label: "Исследование", items: [
+    ["investigation", "Расследование"], ["chronicle", "Летопись"], ["origins", "Фамилии"],
+  ] },
+  { key: "geography", label: "География", href: "#/geography" },
+  { key: "admin", label: "Админка", href: "#/admin" },
+];
+// плоский список всех отдельных страниц — для мобильного меню (там проще
+// один сплошной список, чем выпадающие группы) и для поиска/хлебных крошек
+const NAV_FLAT = NAV_GROUPS.flatMap((g) => (g.items ? g.items.map(([k, l]) => [k, l]) : [[g.key, g.label]]));
+
+function navGroupHtml(g) {
+  if (!g.items) return `<a href="${g.href}" data-nav="${g.key}">${g.label}</a>`;
+  return `
+    <div class="nav-dropdown" data-dropdown="${g.key}">
+      <button type="button" class="nav-dropdown-btn" data-action="toggle-dropdown" data-group="${g.key}">${g.label} <span class="nav-caret">▾</span></button>
+      <div class="nav-dropdown-menu">
+        ${g.items.map(([k, l]) => `<a href="#/${k}" data-nav="${k}">${l}</a>`).join("")}
+      </div>
+    </div>`;
+}
 
 function renderShell() {
   app.innerHTML = `
     <header class="topbar">
       <a href="#/home" class="brand"><span class="brand-seal">СК</span> Скрябины</a>
-      <nav class="topnav">${NAV.map(([k, l]) => `<a href="#/${k}" data-nav="${k}">${l}</a>`).join("")}</nav>
+      <nav class="topnav">${NAV_GROUPS.map(navGroupHtml).join("")}</nav>
+      <div class="topbar-tools">
+        <button type="button" class="site-search-btn" data-action="open-site-search" title="Поиск по сайту">🔍</button>
+        <button type="button" class="nav-burger" data-action="toggle-mobile-nav" aria-label="Меню">☰</button>
+      </div>
     </header>
+    <nav class="mobile-nav" id="mobile-nav">
+      ${NAV_FLAT.map(([k, l]) => `<a href="#/${k}" data-nav="${k}">${l}</a>`).join("")}
+    </nav>
+    <div class="site-search-overlay" id="site-search-overlay" hidden>
+      <div class="site-search-box">
+        <input type="search" class="input" id="site-search-input" placeholder="Искать человека или фамилию…" autofocus>
+        <button type="button" class="btn btn-small" data-action="close-site-search">Закрыть</button>
+      </div>
+      <div class="site-search-results" id="site-search-results"></div>
+    </div>
     <main id="route-outlet"></main>
     <p class="footer-note">Семейный архив Скрябиных — общие данные для всех, кто заходит на сайт. Не является официальным генеалогическим документом.</p>
   `;
 }
 function updateNavActive(view) {
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === view));
+  // подсветить родительскую группу, если активна одна из вложенных страниц
+  document.querySelectorAll("[data-dropdown]").forEach((d) => {
+    const isActive = [...d.querySelectorAll("[data-nav]")].some((a) => a.classList.contains("active"));
+    d.querySelector(".nav-dropdown-btn").classList.toggle("active", isActive);
+  });
 }
 
 function loadingScreen() {
@@ -420,6 +466,13 @@ function viewHome() {
             <div class="hero-stat"><strong data-count="${stats.generations}">0</strong><span>поколений</span></div>
             <div class="hero-stat"><strong data-count="${stats.photos}">0</strong><span>фотографий добавлено</span></div>
           </div>
+          ${(() => {
+            const c = computeArchiveCompletion(DB, window.SURNAME_ORIGINS);
+            return `<div class="archive-progress">
+              <div class="archive-progress-head"><span>Архив заполнен на ${c.percent}%</span><span class="muted-small">${c.filled} из ${c.total} сведений</span></div>
+              <div class="archive-progress-bar"><div class="archive-progress-fill" style="width:${c.percent}%"></div></div>
+            </div>`;
+          })()}
         </div>
         <div class="constellation-wrap">${constellationHeroSVG()}</div>
       </div>
@@ -692,13 +745,16 @@ function viewInvestigation() {
       <div class="page-head"><div><span class="eyebrow">Расследование</span><h1>Потенциальные родственники</h1>
       <p class="lede">Кандидаты появляются здесь, когда вы сохраняете найденного человека через кнопку «🤖 Искать» на точке расследования. Отклонённые не удаляются — чтобы не предлагать их снова.</p></div></div>
       ${treeAnalysisPanel()}
-      <div class="kanban">
-        ${KANBAN_COLUMNS.map(([key, title]) => {
-          const items = all.filter((c) => c.status === key);
-          return `<div class="kanban-col"><h3>${title} <span class="muted-small">(${items.length})</span></h3>
-            <div class="kanban-items">${items.length === 0 ? `<p class="muted-small">пусто</p>` : items.map(candidateCard).join("")}</div>
-          </div>`;
-        }).join("")}
+      <p class="kanban-scroll-hint">← можно прокручивать вправо, чтобы увидеть все колонки →</p>
+      <div class="kanban-wrap">
+        <div class="kanban">
+          ${KANBAN_COLUMNS.map(([key, title]) => {
+            const items = all.filter((c) => c.status === key);
+            return `<div class="kanban-col"><h3>${title} <span class="muted-small">(${items.length})</span></h3>
+              <div class="kanban-items">${items.length === 0 ? `<p class="muted-small">пусто</p>` : items.map(candidateCard).join("")}</div>
+            </div>`;
+          }).join("")}
+        </div>
       </div>
     </div>
   `;
@@ -731,10 +787,49 @@ function placeStatusOf(name) {
 
 // -------------------------------------------------------------- настоящая карта (Leaflet)
 
+// Leaflet подключается не глобально в index.html, а только тогда, когда
+// он реально нужен (Главная, География) — на остальных страницах его
+// вес просто не загружается. Промис кэшируется, чтобы при повторных
+// заходах на карту библиотека не подключалась второй раз.
+let leafletLoadPromise = null;
+function loadLeaflet() {
+  if (typeof L !== "undefined") return Promise.resolve();
+  if (leafletLoadPromise) return leafletLoadPromise;
+  leafletLoadPromise = new Promise((resolve, reject) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    link.integrity = "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";
+    link.crossOrigin = "";
+    document.head.appendChild(link);
+
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+    script.crossOrigin = "";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("не удалось загрузить библиотеку карты"));
+    document.head.appendChild(script);
+  });
+  return leafletLoadPromise;
+}
+
 const activeLeafletMaps = {};
 
-function initLeafletMap(containerId, opts = {}) {
-  const el = document.getElementById(containerId);
+async function initLeafletMap(containerId, opts = {}) {
+  let el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = `<div class="geo-empty">Загружаем карту…</div>`;
+  try {
+    await loadLeaflet();
+  } catch (e) {
+    el.innerHTML = `<div class="geo-empty">Не удалось загрузить карту — проверьте подключение к интернету и обновите страницу.</div>`;
+    return;
+  }
+  // пока карта грузилась, пользователь мог уйти с этой страницы —
+  // контейнер уже мог быть заменён другой перерисовкой; берём свежую
+  // ссылку на элемент, а не полагаемся на ту, что была до ожидания
+  el = document.getElementById(containerId);
   if (!el) return;
   if (typeof L === "undefined") {
     el.innerHTML = `<div class="geo-empty">Не удалось загрузить карту (библиотека Leaflet не подключилась) — проверьте подключение к интернету и обновите страницу.</div>`;
@@ -896,6 +991,16 @@ function gapToggleButton() {
 
 function emptyState(title, body) {
   return `<div class="empty-state"><h3>${esc(title)}</h3><p class="muted">${esc(body)}</p></div>`;
+}
+
+// хлебные крошки: [[текст, href-или-null-если-текущая]]
+function breadcrumbs(trail) {
+  return `<nav class="breadcrumbs" aria-label="Путь">
+    ${trail.map(([label, href], i) => {
+      const isLast = i === trail.length - 1;
+      return (i > 0 ? `<span class="crumb-sep">/</span>` : "") + (href && !isLast ? `<a href="${href}">${esc(label)}</a>` : `<span class="crumb-current">${esc(label)}</span>`);
+    }).join("")}
+  </nav>`;
 }
 
 // -------------------------------------------------------------- people
@@ -1098,7 +1203,7 @@ function viewPerson(id) {
 
   return `
     <div class="page">
-      <p style="margin-top:26px"><a href="#/people">← Все люди</a></p>
+      <p style="margin-top:26px">${breadcrumbs([["Главная", "#/home"], ["Люди", "#/people"], [fullName(p), null]])}</p>
       ${relationChain(id)}
       <div class="person-hero">
         ${photos.length ? `<img class="person-hero-photo" src="${photos[0]}" alt="" data-action="open-lightbox" data-photos='${esc(JSON.stringify(photos))}' data-index="0" style="cursor:zoom-in">` : `<div class="person-hero-photo-placeholder avatar-${branch}">${esc((p.firstName || "?")[0])}</div>`}
@@ -1180,6 +1285,22 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".name-popover") && !e.target.closest("[data-action='chronicle-name-click']")) {
     document.querySelectorAll(".name-popover").forEach((el) => el.remove());
   }
+  if (!e.target.closest("[data-dropdown]")) {
+    document.querySelectorAll("[data-dropdown]").forEach((d) => d.classList.remove("open"));
+  }
+  if (!e.target.closest(".mobile-nav") && !e.target.closest("[data-action='toggle-mobile-nav']")) {
+    const mnav = document.getElementById("mobile-nav");
+    if (mnav) mnav.classList.remove("open");
+  }
+});
+
+// уходим со страницы — закрываем все открытые меню и поиск заодно
+window.addEventListener("hashchange", () => {
+  document.querySelectorAll("[data-dropdown]").forEach((d) => d.classList.remove("open"));
+  const mnav = document.getElementById("mobile-nav");
+  if (mnav) mnav.classList.remove("open");
+  const overlay = document.getElementById("site-search-overlay");
+  if (overlay) overlay.hidden = true;
 });
 
 document.addEventListener("click", (e) => {
@@ -2232,6 +2353,32 @@ document.addEventListener("click", (e) => {
   // --------------------------------------------------------------------- AI
   if (action === "show-in-tree") { e.preventDefault(); window.__schemeRoot = btn.dataset.id; location.hash = "#/scheme"; }
 
+  if (action === "toggle-dropdown") {
+    e.stopPropagation();
+    const wrap = btn.closest("[data-dropdown]");
+    const wasOpen = wrap.classList.contains("open");
+    document.querySelectorAll("[data-dropdown]").forEach((d) => d.classList.remove("open"));
+    if (!wasOpen) wrap.classList.add("open");
+  }
+
+  if (action === "toggle-mobile-nav") {
+    document.getElementById("mobile-nav").classList.toggle("open");
+  }
+
+  if (action === "open-site-search") {
+    const overlay = document.getElementById("site-search-overlay");
+    overlay.hidden = false;
+    document.getElementById("site-search-input").focus();
+  }
+  if (action === "close-site-search") {
+    document.getElementById("site-search-overlay").hidden = true;
+    document.getElementById("site-search-results").innerHTML = "";
+    document.getElementById("site-search-input").value = "";
+  }
+  if (action === "site-search-result") {
+    document.getElementById("site-search-overlay").hidden = true;
+  }
+
   if (action === "edit-marriage-date") {
     const relId = btn.dataset.rel;
     const slot = document.getElementById(`marriage-form-${relId}`);
@@ -2407,6 +2554,22 @@ document.addEventListener("input", (e) => {
     render();
     const box = document.querySelector("[data-action='people-search']");
     if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  }
+  if (e.target.id === "site-search-input") {
+    const q = e.target.value.trim().toLowerCase();
+    const resultsEl = document.getElementById("site-search-results");
+    if (q.length < 2) { resultsEl.innerHTML = ""; return; }
+    const persons = DB.get().persons.filter((p) => fullName(p).toLowerCase().includes(q)).slice(0, 8);
+    const surnameKeys = new Set();
+    const surnames = window.SURNAME_ORIGINS.filter((o) => o.surname.toLowerCase().includes(q) && !surnameKeys.has(o.surname) && surnameKeys.add(o.surname)).slice(0, 5);
+    if (persons.length === 0 && surnames.length === 0) {
+      resultsEl.innerHTML = `<p class="muted-small" style="padding:14px">Ничего не найдено.</p>`;
+      return;
+    }
+    resultsEl.innerHTML = `
+      ${persons.length ? `<div class="search-group-label">Люди</div>${persons.map((p) => `<a class="search-result-row" data-action="site-search-result" href="#/person/${p.id}"><strong>${esc(fullName(p))}</strong><span class="muted-small">${esc(shortDates(p))} · ${esc(p._meta.relationToMarina)}</span></a>`).join("")}` : ""}
+      ${surnames.length ? `<div class="search-group-label">Фамилии</div>${surnames.map((o) => `<a class="search-result-row" data-action="site-search-result" href="#/origins"><strong>${esc(o.surname)}</strong></a>`).join("")}` : ""}
+    `;
   }
 });
 

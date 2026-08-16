@@ -108,6 +108,16 @@ export function levelFor(points) {
   return { title: current.title, index: idx, total: LEVELS.length, next: next ? next.title : null, pointsToNext: next ? next.min - points : 0, progress: Math.max(0, Math.min(1, progress)) };
 }
 
+// публичный процент заполненности архива — та же логика, что и у заданий,
+// но без начисления очков и доступна всем посетителям (не только Марине)
+export function computeArchiveCompletion(db, surnameOriginsList) {
+  const persons = db.get().persons;
+  const total = persons.length * 5 + new Set(persons.map((p) => stripGenderSuffix(p.lastName || "").toLowerCase()).filter(Boolean)).size;
+  const outstanding = computeTasks(db, surnameOriginsList).length;
+  const filled = Math.max(0, total - outstanding);
+  return { filled, total, percent: total > 0 ? Math.round((filled / total) * 100) : 0 };
+}
+
 export function computeBadges(db, quest) {
   const badges = [];
   const ids = quest.completedTaskIds || [];
