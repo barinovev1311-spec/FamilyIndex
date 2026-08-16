@@ -198,6 +198,15 @@ export const DB = {
     listeners.forEach((fn) => fn());
   },
   dismissedSuggestionKeys() { return new Set(overlay?.dismissedSuggestions || []); },
+
+  // -------------------------------------------------------------- задания
+  questState() { return overlay?.quest || { totalPoints: 0, completedTaskIds: [], streak: { lastActiveDate: null, count: 0 } }; },
+  async awardTask(taskId, points) {
+    const r = await api("/api/quest/complete", "POST", { password, taskId, points });
+    overlay = r.overlay;
+    listeners.forEach((fn) => fn());
+    return r.awarded;
+  },
   async aiHistoricalContext(personId, yearFrom, yearTo) { return api("/api/ai/historical-context", "POST", { password, personId, yearFrom, yearTo }); },
   async aiAnalyzeBranch(branchLabel, personIds) { return api("/api/ai/analyze-branch", "POST", { password, branchLabel, personIds }); },
   async aiAnalyzeTree(stats, topGaps) { return api("/api/ai/analyze-tree", "POST", { password, stats, topGaps }); },

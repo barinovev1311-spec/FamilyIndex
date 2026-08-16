@@ -10,5 +10,6 @@
   "surnameVerifications": {},
   "surnameOverrides": {},
   "dismissedSuggestions": [],
-  "chronicle": null
+  "chronicle": null,
+  "quest": { "totalPoints": 0, "completedTaskIds": [], "streak": { "lastActiveDate": null, "count": 0 } }
 }

@@ -31,7 +31,8 @@ const MIME = {
 };
 
 function emptyOverlay() {
-  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [], surnameVerifications: {}, surnameOverrides: {}, dismissedSuggestions: [], chronicle: null };
+  return { addedPersons: [], addedRelationships: [], edits: {}, relationshipEdits: {}, deleted: [], investigationStatuses: {}, notes: [], candidates: [], surnameVerifications: {}, surnameOverrides: {}, dismissedSuggestions: [], chronicle: null,
+    quest: { totalPoints: 0, completedTaskIds: [], streak: { lastActiveDate: null, count: 0 } } };
 }
 
 function ensureOverlay() {
@@ -252,6 +253,33 @@ const server = http.createServer((req, res) => {
       if (!overlay.dismissedSuggestions.includes(key)) overlay.dismissedSuggestions.push(key);
       writeOverlay(overlay);
       sendJSON(res, 200, { overlay });
+    });
+  }
+
+  // ------------------------------------------------------------- задания (геймификация)
+  // идемпотентно: повторное начисление того же taskId ничего не меняет —
+  // это защищает от двойного зачёта, если клиент случайно пришлёт
+  // одно и то же задание дважды (например, из-за одновременного открытия
+  // сайта в двух вкладках)
+  if (p === "/api/quest/complete" && req.method === "POST") {
+    return readBody(req, (err, body) => {
+      if (err || !checkAuth(body)) return sendJSON(res, 401, { error: "unauthorized" });
+      const overlay = readOverlay();
+      if (!overlay.quest) overlay.quest = { totalPoints: 0, completedTaskIds: [], streak: { lastActiveDate: null, count: 0 } };
+      const alreadyDone = overlay.quest.completedTaskIds.includes(body.taskId);
+      if (!alreadyDone) {
+        overlay.quest.completedTaskIds.push(body.taskId);
+        overlay.quest.totalPoints += Number(body.points) || 0;
+        const today = new Date().toISOString().slice(0, 10);
+        const last = overlay.quest.streak.lastActiveDate;
+        if (last !== today) {
+          const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+          overlay.quest.streak.count = last === yesterday ? overlay.quest.streak.count + 1 : 1;
+          overlay.quest.streak.lastActiveDate = today;
+        }
+        writeOverlay(overlay);
+      }
+      sendJSON(res, 200, { overlay, awarded: !alreadyDone });
     });
   }
 

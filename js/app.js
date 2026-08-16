@@ -3,6 +3,7 @@ import { DB } from "./db.js";
 import { generationOffsetRelativeTo, relationPathToMarina } from "./relations.js";
 import { computeGaps, GAP_LABELS, STATUS_LABELS, gapStatusColor, computeTreeStats } from "./gaps.js";
 import { computeRelationshipSuggestions } from "./relationship-suggestions.js";
+import { TASK_TYPES, todaysFeaturedType, computeTasks, levelFor, computeBadges } from "./quests.js";
 
 const app = document.getElementById("app");
 
@@ -1701,17 +1702,19 @@ function viewAdmin() {
         </div>
       </div>`;
   }
-  const tab = window.__adminTab || "people";
+  const tab = window.__adminTab || "quests";
   const db = DB.get();
   return `
     <div class="page">
       <div class="page-head"><div><span class="eyebrow">Режим редактирования</span><h1>Админка</h1></div><button class="btn" data-action="admin-logout">Выйти</button></div>
       <div class="tab-row">
+        <button class="tab-btn ${tab === "quests" ? "active" : ""}" data-action="admin-tab" data-tab="quests">🎯 Задания</button>
         <button class="tab-btn ${tab === "people" ? "active" : ""}" data-action="admin-tab" data-tab="people">Люди</button>
         <button class="tab-btn ${tab === "add" ? "active" : ""}" data-action="admin-tab" data-tab="add">+ Новый человек</button>
         <button class="tab-btn ${tab === "backup" ? "active" : ""}" data-action="admin-tab" data-tab="backup">Резервная копия</button>
         <button class="tab-btn ${tab === "ai" ? "active" : ""}" data-action="admin-tab" data-tab="ai">🤖 ИИ</button>
       </div>
+      ${tab === "quests" ? adminQuestsTab() : ""}
       ${tab === "people" ? adminPeopleTab(db) : ""}
       ${tab === "add" ? adminAddTab() : ""}
       ${tab === "backup" ? adminBackupTab() : ""}
@@ -1729,6 +1732,105 @@ function personCompleteness(p) {
   const nice = [];
   if (!personPhotos(p).length) nice.push("фото");
   return { core, nice, missing: [...core, ...nice] };
+}
+
+// -------------------------------------------------------------- квесты (геймификация)
+
+// сверяет реальное состояние данных с уже засчитанными очками и
+// начисляет то, что появилось нового — без отдельной кнопки «готово»,
+// потому что честнее засчитывать реальную работу, а не отметку о ней.
+// Идемпотентно на сервере — можно спокойно вызывать при каждом
+// открытии вкладки.
+function reconcileQuestProgress() {
+  if (!DB.hasSession()) return;
+  const db = DB.get();
+  const quest = DB.questState();
+  const credited = new Set(quest.completedTaskIds);
+  const toCheck = [];
+
+  db.persons.forEach((p) => {
+    if (personPhotos(p).length) toCheck.push({ id: `photo:${p.id}`, points: TASK_TYPES.photo.points });
+    if (p.bio || p.occupation) toCheck.push({ id: `bio:${p.id}`, points: TASK_TYPES.bio.points });
+    if (p.birth && p.birth.mode !== "unknown") toCheck.push({ id: `dates:${p.id}`, points: TASK_TYPES.dates.points });
+    if (p.birthPlace) toCheck.push({ id: `places:${p.id}`, points: TASK_TYPES.places.points });
+    const gaps = computeGaps(p, DB);
+    const relKinds = new Set(["father", "mother", "parents", "spouse", "children", "siblings"]);
+    if (!gaps.some((g) => relKinds.has(g.type))) toCheck.push({ id: `relatives:${p.id}`, points: TASK_TYPES.relatives.points });
+  });
+  const seenSurnames = new Set();
+  db.persons.forEach((p) => {
+    const key = stripGenderSuffix(p.lastName || "").toLowerCase();
+    if (!key || seenSurnames.has(key)) return;
+    seenSurnames.add(key);
+    if (DB.isSurnameVerified(key)) toCheck.push({ id: `surname:${key}`, points: TASK_TYPES.surname.points });
+  });
+
+  const fresh = toCheck.filter((t) => !credited.has(t.id));
+  fresh.forEach((t) => {
+    DB.awardTask(t.id, t.points).then((awarded) => {
+      if (awarded) toast(`+${t.points} очков!`);
+    }).catch(() => {});
+  });
+}
+
+function taskCard(t, featured) {
+  const meta = TASK_TYPES[t.type];
+  const href = t.personId ? `#/person/${t.personId}` : "#/origins";
+  return `
+    <a class="quest-task ${featured ? "quest-task-featured" : ""}" href="${href}">
+      <span class="quest-task-icon">${meta.icon}</span>
+      <span class="quest-task-body">
+        <span class="quest-task-title">${esc(t.title)}</span>
+        ${t.sub ? `<span class="quest-task-sub">${esc(t.sub)}</span>` : ""}
+      </span>
+      <span class="quest-task-points">+${meta.points}</span>
+    </a>`;
+}
+
+function adminQuestsTab() {
+  reconcileQuestProgress();
+  const db = DB.get();
+  const quest = DB.questState();
+  const level = levelFor(quest.totalPoints);
+  const badges = computeBadges(DB, quest);
+  const tasks = computeTasks(DB, window.SURNAME_ORIGINS);
+  const featuredType = todaysFeaturedType();
+  const featuredMeta = TASK_TYPES[featuredType];
+  const featured = tasks.filter((t) => t.type === featuredType).slice(0, 3);
+  const restAll = tasks.filter((t) => !featured.includes(t));
+  const showAll = window.__questShowAll;
+  const REST_CAP = 12;
+  const rest = showAll ? restAll : restAll.slice(0, REST_CAP);
+
+  if (tasks.length === 0) {
+    return `
+      <div class="panel quest-header">
+        <div class="quest-level"><strong>${esc(level.title)}</strong><span class="muted-small">${quest.totalPoints} очков</span></div>
+      </div>
+      ${emptyState("Все задания выполнены!", "Пробелов в данных сейчас не найдено — архив в отличном состоянии.")}
+    `;
+  }
+
+  return `
+    <div class="panel quest-header">
+      <div class="quest-level">
+        <strong>${esc(level.title)}</strong>
+        <span class="muted-small">${quest.totalPoints} очков ${level.next ? `· до «${esc(level.next)}» осталось ${level.pointsToNext}` : "· максимальный уровень"}</span>
+        <div class="quest-progress-bar"><div class="quest-progress-fill" style="width:${Math.round(level.progress * 100)}%"></div></div>
+      </div>
+      ${quest.streak?.count ? `<div class="quest-streak">🔥 ${quest.streak.count} ${ruPlural(quest.streak.count, ["день", "дня", "дней"])} подряд</div>` : ""}
+      ${badges.length ? `<div class="quest-badges">${badges.map((b) => `<span class="quest-badge" title="${esc(b.label)}">${b.icon}</span>`).join("")}</div>` : ""}
+    </div>
+
+    ${featured.length ? `
+      <div class="block-head" style="margin:26px 0 14px"><span class="eyebrow">Тема дня: ${esc(featuredMeta.verb)}</span><h3>${featuredMeta.icon} ${esc(featuredMeta.label)}</h3></div>
+      <div class="quest-list">${featured.map((t) => taskCard(t, true)).join("")}</div>
+    ` : ""}
+
+    <div class="block-head" style="margin:26px 0 14px"><span class="eyebrow">Остальные задания</span><h3>Ещё ${restAll.length} ${ruPlural(restAll.length, ["задание", "задания", "заданий"])}</h3></div>
+    <div class="quest-list">${rest.map((t) => taskCard(t, false)).join("")}</div>
+    ${!showAll && restAll.length > REST_CAP ? `<button class="btn btn-small" style="margin-top:14px" data-action="quest-show-all">Показать все ${restAll.length}</button>` : ""}
+  `;
 }
 
 function adminPeopleTab(db) {
@@ -1933,6 +2035,7 @@ document.addEventListener("click", (e) => {
   }
 
   if (action === "toggle-gaps") { window.__showGaps = !window.__showGaps; render(); }
+  if (action === "quest-show-all") { window.__questShowAll = true; render(); }
 
   if (action === "geo-select-place") {
     window.__selectedPlace = btn.dataset.place;
